@@ -1,8 +1,9 @@
-package ethutil
+package ethrlp
 
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/eth-go/ethutil"
 	"math/big"
 )
 
@@ -56,7 +57,7 @@ func DecodeWithReader(reader *bytes.Buffer) interface{} {
 		return reader.Next(int(char - 0x80))
 
 	case char <= 0xbf:
-		length := ReadVarInt(reader.Next(int(char - 0xb7)))
+		length := ethutil.ReadVarInt(reader.Next(int(char - 0xb7)))
 
 		return reader.Next(int(length))
 
@@ -69,7 +70,7 @@ func DecodeWithReader(reader *bytes.Buffer) interface{} {
 
 		return slice
 	case char <= 0xff:
-		length := ReadVarInt(reader.Next(int(char - 0xf7)))
+		length := ethutil.ReadVarInt(reader.Next(int(char - 0xf7)))
 		for i := uint64(0); i < length; i++ {
 			obj := DecodeWithReader(reader)
 			slice = append(slice, obj)
@@ -182,7 +183,7 @@ func Decode(data []byte, pos uint64) (interface{}, uint64) {
 	case char <= 0xbf:
 		b := uint64(data[pos]) - 0xb7
 
-		b2 := ReadVarInt(data[pos+1 : pos+1+b])
+		b2 := ethutil.ReadVarInt(data[pos+1 : pos+1+b])
 
 		return data[pos+1+b : pos+1+b+b2], pos + 1 + b + b2
 
@@ -206,7 +207,7 @@ func Decode(data []byte, pos uint64) (interface{}, uint64) {
 
 	case char <= 0xff:
 		l := uint64(data[pos]) - 0xf7
-		b := ReadVarInt(data[pos+1 : pos+1+l])
+		b := ethutil.ReadVarInt(data[pos+1 : pos+1+l])
 
 		pos = pos + l + 1
 

@@ -1,4 +1,4 @@
-package ethutil
+package ethrlp
 
 import (
 	"bytes"
@@ -72,9 +72,16 @@ func TestMath(t *testing.T) {
 		t.Error("Expected 3, got", a)
 	}
 
-	a = NewValue(2)
+	a = NewValue(3)
 	a.Sub(1).Sub(1)
+	if !a.DeepCmp(NewValue(1)) {
+		t.Error("Expected 1, got", a)
+	}
+
+	a = NewValue(1)
+	a.Sub(1)
 	if !a.DeepCmp(NewValue(0)) {
 		t.Error("Expected 0, got", a)
 	}
+
 }

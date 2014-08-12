@@ -1,7 +1,8 @@
-package ethutil
+package ethrlp
 
 import (
 	"fmt"
+	"github.com/ethereum/eth-go/ethutil"
 	"math/big"
 	"reflect"
 )
@@ -231,7 +232,7 @@ func (self *Value) Copy() *Value {
 	case *big.Int:
 		return NewValue(new(big.Int).Set(val))
 	case []byte:
-		return NewValue(CopyBytes(val))
+		return NewValue(ethutil.CopyBytes(val))
 	default:
 		return NewValue(self.Val)
 	}
@@ -329,7 +330,7 @@ func (self *Value) doOp(op int, other interface{}) *Value {
 	case valOpMul:
 		self.Val = left.Mul(left, right)
 	case valOpPow:
-		self.Val = left.Exp(left, right, Big0)
+		self.Val = left.Exp(left, right, ethutil.Big0)
 	case valOpSub:
 		self.Val = left.Sub(left, right)
 	}
