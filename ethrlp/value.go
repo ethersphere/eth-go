@@ -114,11 +114,8 @@ func (val *Value) BigInt() *big.Int {
 		return b
 	} else if a, ok := val.Val.(*big.Int); ok {
 		return a
-	} else {
-		return big.NewInt(int64(val.Uint()))
 	}
-
-	return big.NewInt(0)
+	return big.NewInt(int64(val.Uint()))
 }
 
 func (val *Value) Str() string {
