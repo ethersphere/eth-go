@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethlog"
+	"github.com/ethereum/eth-go/ethp2p"
 	"github.com/ethereum/eth-go/ethreact"
 	"github.com/ethereum/eth-go/ethrpc"
 	"github.com/ethereum/eth-go/ethstate"
@@ -103,6 +104,9 @@ func New(db ethutil.Database, clientIdentity ethwire.ClientIdentity, keyManager 
 		}
 	}
 
+	serv := ethp2p.New("30303", true)
+	fmt.Println(serv)
+
 	bootstrapDb(db)
 
 	ethutil.Config.Db = db
@@ -128,7 +132,7 @@ func New(db ethutil.Database, clientIdentity ethwire.ClientIdentity, keyManager 
 	ethereum.blockChain = ethchain.NewBlockChain(ethereum)
 	ethereum.stateManager = ethchain.NewStateManager(ethereum)
 
-	// Start the tx pool
+	// tart the tx pool
 	ethereum.txPool.Start()
 
 	return ethereum, nil
