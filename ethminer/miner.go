@@ -159,6 +159,7 @@ func (miner *Miner) Stop() {
 }
 
 func (self *Miner) mineNewBlock() {
+
 	stateManager := self.ethereum.StateManager()
 
 	self.block = self.ethereum.BlockChain().NewBlock(self.coinbase)

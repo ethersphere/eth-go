@@ -1,6 +1,7 @@
 package ethpipe
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -23,29 +24,30 @@ type JSBlock struct {
 	Name         string        `json:"name"`
 	GasLimit     string        `json:"gasLimit"`
 	GasUsed      string        `json:"gasUsed"`
+	PrevHash     string        `json:"prevHash"`
 }
 
 // Creates a new QML Block from a chain block
 func NewJSBlock(block *ethchain.Block) *JSBlock {
 	if block == nil {
-		return nil
+		return &JSBlock{}
 	}
 
-	var ptxs []JSTransaction
+	var ptxs []*JSTransaction
 	for _, tx := range block.Transactions() {
-		ptxs = append(ptxs, *NewJSTx(tx))
+		ptxs = append(ptxs, NewJSTx(tx, block.State()))
 	}
 
-	/*
-		txJson, err := json.Marshal(ptxs)
-		if err != nil {
-			return nil
-		}
-		return &JSBlock{ref: block, Size: block.Size().String(), Number: int(block.Number.Uint64()), GasUsed: block.GasUsed.String(), GasLimit: block.GasLimit.String(), Hash: ethutil.Bytes2Hex(block.Hash()), Transactions: string(txJson), Time: block.Time, Coinbase: ethutil.Bytes2Hex(block.Coinbase)}
-	*/
 	list := ethutil.NewList(ptxs)
 
-	return &JSBlock{ref: block, Size: block.Size().String(), Number: int(block.Number.Uint64()), GasUsed: block.GasUsed.String(), GasLimit: block.GasLimit.String(), Hash: ethutil.Bytes2Hex(block.Hash()), Transactions: list, Time: block.Time, Coinbase: ethutil.Bytes2Hex(block.Coinbase)}
+	return &JSBlock{
+		ref: block, Size: block.Size().String(),
+		Number: int(block.Number.Uint64()), GasUsed: block.GasUsed.String(),
+		GasLimit: block.GasLimit.String(), Hash: ethutil.Bytes2Hex(block.Hash()),
+		Transactions: list, Time: block.Time,
+		Coinbase: ethutil.Bytes2Hex(block.Coinbase),
+		PrevHash: ethutil.Bytes2Hex(block.PrevHash),
+	}
 }
 
 func (self *JSBlock) ToString() string {
@@ -62,7 +64,7 @@ func (self *JSBlock) GetTransaction(hash string) *JSTransaction {
 		return nil
 	}
 
-	return NewJSTx(tx)
+	return NewJSTx(tx, self.ref.State())
 }
 
 type JSTransaction struct {
@@ -81,11 +83,11 @@ type JSTransaction struct {
 	Confirmations   int    `json:"confirmations"`
 }
 
-func NewJSTx(tx *ethchain.Transaction) *JSTransaction {
+func NewJSTx(tx *ethchain.Transaction, state *ethstate.State) *JSTransaction {
 	hash := ethutil.Bytes2Hex(tx.Hash())
 	receiver := ethutil.Bytes2Hex(tx.Recipient)
 	if receiver == "0000000000000000000000000000000000000000" {
-		receiver = ethutil.Bytes2Hex(tx.CreationAddress())
+		receiver = ethutil.Bytes2Hex(tx.CreationAddress(state))
 	}
 	sender := ethutil.Bytes2Hex(tx.Sender())
 	createsContract := tx.CreatesContract()
@@ -150,6 +152,7 @@ type JSPeer struct {
 	Version      string `json:"version"`
 	LastResponse string `json:"lastResponse"`
 	Latency      string `json:"latency"`
+	Caps         string `json:"caps"`
 }
 
 func NewJSPeer(peer ethchain.Peer) *JSPeer {
@@ -163,7 +166,13 @@ func NewJSPeer(peer ethchain.Peer) *JSPeer {
 	}
 	ipAddress := strings.Join(ip, ".")
 
-	return &JSPeer{ref: &peer, Inbound: peer.Inbound(), LastSend: peer.LastSend().Unix(), LastPong: peer.LastPong(), Version: peer.Version(), Ip: ipAddress, Port: int(peer.Port()), Latency: peer.PingTime()}
+	var caps []string
+	capsIt := peer.Caps().NewIterator()
+	for capsIt.Next() {
+		caps = append(caps, capsIt.Value().Str())
+	}
+
+	return &JSPeer{ref: &peer, Inbound: peer.Inbound(), LastSend: peer.LastSend().Unix(), LastPong: peer.LastPong(), Version: peer.Version(), Ip: ipAddress, Port: int(peer.Port()), Latency: peer.PingTime(), Caps: fmt.Sprintf("%v", caps)}
 }
 
 type JSReceipt struct {

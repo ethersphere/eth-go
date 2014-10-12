@@ -40,6 +40,7 @@ const (
 	MsgBlockHashesTy    = 0x14
 	MsgGetBlocksTy      = 0x15
 	MsgBlockTy          = 0x16
+	MsgNewBlockTy       = 0x17
 )
 
 var msgTypeToString = map[MsgType]string{
@@ -111,7 +112,7 @@ func ReadMessages(conn net.Conn) (msgs []*Msg, err error) {
 
 		if n == 0 && len(buff) == 0 {
 			// If there's nothing on the wire wait for a bit
-			time.Sleep(200)
+			time.Sleep(200 * time.Millisecond)
 
 			continue
 		}

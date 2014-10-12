@@ -63,6 +63,10 @@ func (val *Value) Uint() uint64 {
 		return uint64(Val)
 	} else if Val, ok := val.Val.(uint64); ok {
 		return Val
+	} else if Val, ok := val.Val.(float32); ok {
+		return uint64(Val)
+	} else if Val, ok := val.Val.(float64); ok {
+		return uint64(Val)
 	} else if Val, ok := val.Val.(int); ok {
 		return uint64(Val)
 	} else if Val, ok := val.Val.(uint); ok {
@@ -118,6 +122,8 @@ func (val *Value) BigInt() *big.Int {
 		return b
 	} else if a, ok := val.Val.(*big.Int); ok {
 		return a
+	} else if a, ok := val.Val.(string); ok {
+		return Big(a)
 	} else {
 		return big.NewInt(int64(val.Uint()))
 	}

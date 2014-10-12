@@ -142,14 +142,12 @@ func (self *StateTransition) preCheck() (err error) {
 func (self *StateTransition) TransitionState() (err error) {
 	statelogger.Debugf("(~) %x\n", self.tx.Hash())
 
-	/*
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Infoln(r)
-				err = fmt.Errorf("state transition err %v", r)
-			}
-		}()
-	*/
+	defer func() {
+		if r := recover(); r != nil {
+			statelogger.Infoln(r)
+			err = fmt.Errorf("state transition err %v", r)
+		}
+	}()
 
 	// XXX Transactions after this point are considered valid.
 	if err = self.preCheck(); err != nil {
@@ -278,15 +276,6 @@ func (self *StateTransition) Eval(msg *ethstate.Message, script []byte, context 
 
 	ret, _, err = callerClosure.Call(vm, self.tx.Data)
 
-	if err == nil {
-		// Execute POSTs
-		for e := vm.Queue().Front(); e != nil; e = e.Next() {
-			msg := e.Value.(*ethvm.Message)
-
-			msg.Exec(msg.Addr(), transactor)
-		}
-	}
-
 	return
 }
 
@@ -294,9 +283,9 @@ func (self *StateTransition) Eval(msg *ethstate.Message, script []byte, context 
 func MakeContract(tx *Transaction, state *ethstate.State) *ethstate.StateObject {
 	// Create contract if there's no recipient
 	if tx.IsContract() {
-		addr := tx.CreationAddress()
+		addr := tx.CreationAddress(state)
 
-		contract := state.NewStateObject(addr)
+		contract := state.GetOrNewStateObject(addr)
 		contract.InitCode = tx.Data
 		contract.State = ethstate.New(ethtrie.New(ethutil.Config.Db, ""))
 

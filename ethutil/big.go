@@ -34,6 +34,21 @@ func BigD(data []byte) *big.Int {
 	return n
 }
 
+// To256
+//
+// "cast" the big int to a 256 big int (i.e., limit to)
+var tt256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+
+func To256(x *big.Int) *big.Int {
+	x.And(x, tt256)
+
+	if x.Cmp(new(big.Int)) < 0 {
+		x.SetInt64(0)
+	}
+
+	return x
+}
+
 // Big to bytes
 //
 // Returns the bytes of a big integer with the size specified by **base**

@@ -24,7 +24,7 @@ const (
 	// The size of the output buffer for writing messages
 	outputBufferSize = 50
 	// Current protocol version
-	ProtocolVersion = 33
+	ProtocolVersion = 34
 	// Current P2P version
 	P2PVersion = 0
 	// Ethereum network version
@@ -39,15 +39,15 @@ const (
 	// Values are given explicitly instead of by iota because these values are
 	// defined by the wire protocol spec; it is easier for humans to ensure
 	// correctness when values are explicit.
-	DiscReRequested  = 0x00
-	DiscReTcpSysErr  = 0x01
-	DiscBadProto     = 0x02
-	DiscBadPeer      = 0x03
-	DiscTooManyPeers = 0x04
-	DiscConnDup      = 0x05
-	DiscGenesisErr   = 0x06
-	DiscProtoErr     = 0x07
-	DiscQuitting     = 0x08
+	DiscRequested DiscReason = iota
+	DiscReTcpSysErr
+	DiscBadProto
+	DiscBadPeer
+	DiscTooManyPeers
+	DiscConnDup
+	DiscGenesisErr
+	DiscProtoErr
+	DiscQuitting
 )
 
 var discReasonToString = []string{
@@ -129,8 +129,9 @@ type Peer struct {
 	statusKnown  bool
 
 	// Last received pong message
-	lastPong          int64
-	lastBlockReceived time.Time
+	lastPong           int64
+	lastBlockReceived  time.Time
+	doneFetchingHashes bool
 
 	host             []byte
 	port             uint16
@@ -155,45 +156,53 @@ type Peer struct {
 	pingStartTime time.Time
 
 	lastRequestedBlock *ethchain.Block
+
+	protocolCaps *ethutil.Value
 }
 
 func NewPeer(conn net.Conn, ethereum *Ethereum, inbound bool) *Peer {
 	pubkey := ethereum.KeyManager().PublicKey()[1:]
 
 	return &Peer{
-		outputQueue:     make(chan *ethwire.Msg, outputBufferSize),
-		quit:            make(chan bool),
-		ethereum:        ethereum,
-		conn:            conn,
-		inbound:         inbound,
-		disconnect:      0,
-		connected:       1,
-		port:            30303,
-		pubkey:          pubkey,
-		blocksRequested: 10,
-		caps:            ethereum.ServerCaps(),
-		version:         ethereum.ClientIdentity().String(),
+		outputQueue:        make(chan *ethwire.Msg, outputBufferSize),
+		quit:               make(chan bool),
+		ethereum:           ethereum,
+		conn:               conn,
+		inbound:            inbound,
+		disconnect:         0,
+		connected:          1,
+		port:               30303,
+		pubkey:             pubkey,
+		blocksRequested:    10,
+		caps:               ethereum.ServerCaps(),
+		version:            ethereum.ClientIdentity().String(),
+		protocolCaps:       ethutil.NewValue(nil),
+		td:                 big.NewInt(0),
+		doneFetchingHashes: true,
 	}
 }
 
 func NewOutboundPeer(addr string, ethereum *Ethereum, caps Caps) *Peer {
 	p := &Peer{
-		outputQueue: make(chan *ethwire.Msg, outputBufferSize),
-		quit:        make(chan bool),
-		ethereum:    ethereum,
-		inbound:     false,
-		connected:   0,
-		disconnect:  0,
-		port:        30303,
-		caps:        caps,
-		version:     ethereum.ClientIdentity().String(),
+		outputQueue:        make(chan *ethwire.Msg, outputBufferSize),
+		quit:               make(chan bool),
+		ethereum:           ethereum,
+		inbound:            false,
+		connected:          0,
+		disconnect:         0,
+		port:               30303,
+		caps:               caps,
+		version:            ethereum.ClientIdentity().String(),
+		protocolCaps:       ethutil.NewValue(nil),
+		td:                 big.NewInt(0),
+		doneFetchingHashes: true,
 	}
 
 	// Set up the connection in another goroutine so we don't block the main thread
 	go func() {
 		conn, err := p.Connect(addr)
 		if err != nil {
-			peerlogger.Debugln("Connection to peer failed. Giving up.", err)
+			//peerlogger.Debugln("Connection to peer failed. Giving up.", err)
 			p.Stop()
 			return
 		}
@@ -214,7 +223,6 @@ func (self *Peer) Connect(addr string) (conn net.Conn, err error) {
 	for attempts := 0; attempts < maxTries; attempts++ {
 		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
 		if err != nil {
-			//peerlogger.Debugf("Peer connection failed. Retrying (%d/%d) (%s)\n", attempts+1, maxTries, addr)
 			time.Sleep(time.Duration(attempts*20) * time.Second)
 			continue
 		}
@@ -304,18 +312,18 @@ func (p *Peer) writeMessage(msg *ethwire.Msg) {
 func (p *Peer) HandleOutbound() {
 	// The ping timer. Makes sure that every 2 minutes a ping is send to the peer
 	pingTimer := time.NewTicker(pingPongTimer)
-	serviceTimer := time.NewTicker(5 * time.Minute)
+	serviceTimer := time.NewTicker(10 * time.Second)
 
 out:
 	for {
+	skip:
 		select {
 		// Main message queue. All outbound messages are processed through here
 		case msg := <-p.outputQueue:
 			if !p.statusKnown {
 				switch msg.Type {
-				case ethwire.MsgGetTxsTy, ethwire.MsgGetBlockHashesTy, ethwire.MsgGetBlocksTy, ethwire.MsgBlockHashesTy, ethwire.MsgBlockTy:
-					peerlogger.Debugln("Blocked outgoing [eth] message to peer without the [eth] cap.")
-					break
+				case ethwire.MsgGetTxsTy, ethwire.MsgTxTy, ethwire.MsgGetBlockHashesTy, ethwire.MsgBlockHashesTy, ethwire.MsgGetBlocksTy, ethwire.MsgBlockTy:
+					break skip
 				}
 			}
 
@@ -338,10 +346,7 @@ out:
 		// Service timer takes care of peer broadcasting, transaction
 		// posting or block posting
 		case <-serviceTimer.C:
-			if p.caps&CapPeerDiscTy > 0 {
-				msg := p.peersMessage()
-				p.ethereum.BroadcastMsg(msg)
-			}
+			p.QueueMessage(ethwire.NewMessage(ethwire.MsgGetPeersTy, ""))
 
 		case <-p.quit:
 			// Break out of the for loop if a quit message is posted
@@ -362,22 +367,24 @@ clean:
 }
 
 func formatMessage(msg *ethwire.Msg) (ret string) {
-	ret = fmt.Sprintf("%v ", msg.Type)
+	ret = fmt.Sprintf("%v %v", msg.Type, msg.Data)
 
 	/*
 		XXX Commented out because I need the log level here to determine
 		if i should or shouldn't generate this message
 	*/
-	switch msg.Type {
-	case ethwire.MsgPeersTy:
-		ret += fmt.Sprintf("(%d entries)", msg.Data.Len())
-	case ethwire.MsgBlockTy:
-		b1, b2 := ethchain.NewBlockFromRlpValue(msg.Data.Get(0)), ethchain.NewBlockFromRlpValue(msg.Data.Get(msg.Data.Len()-1))
-		ret += fmt.Sprintf("(%d entries) %x - %x", msg.Data.Len(), b1.Hash()[0:4], b2.Hash()[0:4])
-	case ethwire.MsgBlockHashesTy:
-		h1, h2 := msg.Data.Get(0).Bytes(), msg.Data.Get(msg.Data.Len()-1).Bytes()
-		ret += fmt.Sprintf("(%d entries) %x - %x", msg.Data.Len(), h1[0:4], h2[0:4])
-	}
+	/*
+		switch msg.Type {
+		case ethwire.MsgPeersTy:
+			ret += fmt.Sprintf("(%d entries)", msg.Data.Len())
+		case ethwire.MsgBlockTy:
+			b1, b2 := ethchain.NewBlockFromRlpValue(msg.Data.Get(0)), ethchain.NewBlockFromRlpValue(msg.Data.Get(msg.Data.Len()-1))
+			ret += fmt.Sprintf("(%d entries) %x - %x", msg.Data.Len(), b1.Hash()[0:4], b2.Hash()[0:4])
+		case ethwire.MsgBlockHashesTy:
+			h1, h2 := msg.Data.Get(0).Bytes(), msg.Data.Get(msg.Data.Len()-1).Bytes()
+			ret += fmt.Sprintf("(%d entries) %x - %x", msg.Data.Len(), h1, h2)
+		}
+	*/
 
 	return
 }
@@ -498,6 +505,7 @@ func (p *Peer) HandleInbound() {
 					it := msg.Data.NewIterator()
 					for it.Next() {
 						hash := it.Value().Bytes()
+						p.lastReceivedHash = hash
 
 						if blockPool.HasCommonHash(hash) {
 							foundCommonHash = true
@@ -505,17 +513,17 @@ func (p *Peer) HandleInbound() {
 							break
 						}
 
-						blockPool.AddHash(hash)
-
-						p.lastReceivedHash = hash
-
-						p.lastBlockReceived = time.Now()
+						blockPool.AddHash(hash, p)
 					}
 
-					if foundCommonHash {
-						p.FetchBlocks()
-					} else {
+					if !foundCommonHash {
+						//if !p.FetchHashes() {
+						//	p.doneFetchingHashes = true
+						//}
 						p.FetchHashes()
+					} else {
+						peerlogger.Infof("Found common hash (%x...)\n", p.lastReceivedHash[0:4])
+						p.doneFetchingHashes = true
 					}
 
 				case ethwire.MsgBlockTy:
@@ -526,27 +534,22 @@ func (p *Peer) HandleInbound() {
 					it := msg.Data.NewIterator()
 					for it.Next() {
 						block := ethchain.NewBlockFromRlpValue(it.Value())
-						//fmt.Printf("%v %x - %x\n", block.Number, block.Hash()[0:4], block.PrevHash[0:4])
-
-						blockPool.SetBlock(block, p)
+						blockPool.Add(block, p)
 
 						p.lastBlockReceived = time.Now()
 					}
+				case ethwire.MsgNewBlockTy:
+					var (
+						blockPool = p.ethereum.blockPool
+						block     = ethchain.NewBlockFromRlpValue(msg.Data.Get(0))
+						td        = msg.Data.Get(1).BigInt()
+					)
 
-					var err error
-					blockPool.CheckLinkAndProcess(func(block *ethchain.Block) {
-						err = p.ethereum.StateManager().Process(block, false)
-					})
-
-					if err != nil {
-						peerlogger.Infoln(err)
-					} else {
-						// Don't trigger if there's just one block.
-						if blockPool.Len() != 0 && msg.Data.Len() > 1 {
-							p.FetchBlocks()
-						}
+					if td.Cmp(blockPool.td) > 0 {
+						p.ethereum.blockPool.AddNew(block, p)
 					}
 				}
+
 			}
 		}
 	}
@@ -554,37 +557,40 @@ func (p *Peer) HandleInbound() {
 	p.Stop()
 }
 
-func (self *Peer) FetchBlocks() {
-	blockPool := self.ethereum.blockPool
-
-	hashes := blockPool.Take(100, self)
+func (self *Peer) FetchBlocks(hashes [][]byte) {
 	if len(hashes) > 0 {
+		peerlogger.Debugf("Fetching blocks (%d)\n", len(hashes))
+
 		self.QueueMessage(ethwire.NewMessage(ethwire.MsgGetBlocksTy, ethutil.ByteSliceToInterface(hashes)))
 	}
 }
 
-func (self *Peer) FetchHashes() {
+func (self *Peer) FetchHashes() bool {
 	blockPool := self.ethereum.blockPool
 
-	if self.td.Cmp(blockPool.td) >= 0 {
-		blockPool.td = self.td
+	return blockPool.FetchHashes(self)
+}
 
-		if !blockPool.HasLatestHash() {
-			self.QueueMessage(ethwire.NewMessage(ethwire.MsgGetBlockHashesTy, []interface{}{self.lastReceivedHash, uint32(256)}))
-		}
-	}
+func (self *Peer) FetchingHashes() bool {
+	return !self.doneFetchingHashes
 }
 
 // General update method
 func (self *Peer) update() {
-	serviceTimer := time.NewTicker(5 * time.Second)
+	serviceTimer := time.NewTicker(100 * time.Millisecond)
 
 out:
 	for {
 		select {
 		case <-serviceTimer.C:
-			if time.Since(self.lastBlockReceived) > 10*time.Second {
-				self.catchingUp = false
+			if self.IsCap("eth") {
+				var (
+					sinceBlock = time.Since(self.lastBlockReceived)
+				)
+
+				if sinceBlock > 5*time.Second {
+					self.catchingUp = false
+				}
 			}
 		case <-self.quit:
 			break out
@@ -627,18 +633,22 @@ func (p *Peer) Start() {
 }
 
 func (p *Peer) Stop() {
+	p.StopWithReason(DiscRequested)
+}
+
+func (p *Peer) StopWithReason(reason DiscReason) {
 	if atomic.AddInt32(&p.disconnect, 1) != 1 {
 		return
 	}
 
-	close(p.quit)
-	if atomic.LoadInt32(&p.connected) != 0 {
-		p.writeMessage(ethwire.NewMessage(ethwire.MsgDiscTy, ""))
-		p.conn.Close()
-	}
-
 	// Pre-emptively remove the peer; don't wait for reaping. We already know it's dead if we are here
 	p.ethereum.RemovePeer(p)
+
+	close(p.quit)
+	if atomic.LoadInt32(&p.connected) != 0 {
+		p.writeMessage(ethwire.NewMessage(ethwire.MsgDiscTy, reason))
+		p.conn.Close()
+	}
 }
 
 func (p *Peer) peersMessage() *ethwire.Msg {
@@ -707,10 +717,7 @@ func (self *Peer) handleStatus(msg *ethwire.Msg) {
 
 	// Compare the total TD with the blockchain TD. If remote is higher
 	// fetch hashes from highest TD node.
-	if self.td.Cmp(self.ethereum.BlockChain().TD) > 0 {
-		self.ethereum.blockPool.AddHash(self.lastReceivedHash)
-		self.FetchHashes()
-	}
+	self.FetchHashes()
 
 	ethlogger.Infof("Peer is [eth] capable. (TD = %v ~ %x) %d / %d", self.td, self.bestHash, protoVersion, netVersion)
 
@@ -752,6 +759,24 @@ func (p *Peer) handleHandshake(msg *ethwire.Msg) {
 		return
 	}
 
+	// Self connect detection
+	pubkey := p.ethereum.KeyManager().PublicKey()
+	if bytes.Compare(pubkey[1:], pub) == 0 {
+		p.Stop()
+
+		return
+	}
+
+	// Check for blacklisting
+	for _, pk := range p.ethereum.blacklist {
+		if bytes.Compare(pk, pub) == 0 {
+			peerlogger.Debugf("Blacklisted peer tried to connect (%x...)\n", pubkey[0:4])
+			p.StopWithReason(DiscBadPeer)
+
+			return
+		}
+	}
+
 	usedPub := 0
 	// This peer is already added to the peerlist so we expect to find a double pubkey at least once
 	eachPeer(p.ethereum.Peers(), func(peer *Peer, e *list.Element) {
@@ -770,16 +795,8 @@ func (p *Peer) handleHandshake(msg *ethwire.Msg) {
 	// If this is an inbound connection send an ack back
 	if p.inbound {
 		p.port = uint16(port)
-
-		// Self connect detection
-		pubkey := p.ethereum.KeyManager().PublicKey()
-		if bytes.Compare(pubkey, p.pubkey) == 0 {
-			p.Stop()
-
-			return
-		}
-
 	}
+
 	p.SetVersion(clientId)
 
 	p.versionKnown = true
@@ -787,6 +804,7 @@ func (p *Peer) handleHandshake(msg *ethwire.Msg) {
 	p.ethereum.PushPeer(p)
 	p.ethereum.reactor.Post("peerList", p.ethereum.Peers())
 
+	p.protocolCaps = caps
 	capsIt := caps.NewIterator()
 	var capsStrs []string
 	for capsIt.Next() {
@@ -802,6 +820,21 @@ func (p *Peer) handleHandshake(msg *ethwire.Msg) {
 	ethlogger.Infof("Added peer (%s) %d / %d (%v)\n", p.conn.RemoteAddr(), p.ethereum.Peers().Len(), p.ethereum.MaxPeers, capsStrs)
 
 	peerlogger.Debugln(p)
+}
+
+func (self *Peer) IsCap(cap string) bool {
+	capsIt := self.protocolCaps.NewIterator()
+	for capsIt.Next() {
+		if capsIt.Value().Str() == cap {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (self *Peer) Caps() *ethutil.Value {
+	return self.protocolCaps
 }
 
 func (p *Peer) String() string {
@@ -826,26 +859,23 @@ func (p *Peer) RlpData() []interface{} {
 	return []interface{}{p.host, p.port, p.pubkey}
 }
 
-func packAddr(address, port string) ([]byte, uint16) {
-	addr := strings.Split(address, ".")
-	a, _ := strconv.Atoi(addr[0])
-	b, _ := strconv.Atoi(addr[1])
-	c, _ := strconv.Atoi(addr[2])
-	d, _ := strconv.Atoi(addr[3])
-	host := []byte{byte(a), byte(b), byte(c), byte(d)}
-	prt, _ := strconv.Atoi(port)
+func packAddr(address, _port string) (host []byte, port uint16) {
+	p, _ := strconv.Atoi(_port)
+	port = uint16(p)
 
-	return host, uint16(prt)
+	h := net.ParseIP(address)
+	if ip := h.To4(); ip != nil {
+		host = []byte(ip)
+	} else {
+		host = []byte(h)
+	}
+
+	return
 }
 
 func unpackAddr(value *ethutil.Value, p uint64) string {
-	byts := value.Bytes()
-	a := strconv.Itoa(int(byts[0]))
-	b := strconv.Itoa(int(byts[1]))
-	c := strconv.Itoa(int(byts[2]))
-	d := strconv.Itoa(int(byts[3]))
-	host := strings.Join([]string{a, b, c, d}, ".")
-	port := strconv.Itoa(int(p))
+	host, _ := net.IP(value.Bytes()).MarshalText()
+	prt := strconv.Itoa(int(p))
 
-	return net.JoinHostPort(host, port)
+	return net.JoinHostPort(string(host), prt)
 }

@@ -2,6 +2,7 @@ package ethchain
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/eth-go/ethlog"
@@ -39,13 +40,11 @@ func (bc *BlockChain) Genesis() *Block {
 
 func (bc *BlockChain) NewBlock(coinbase []byte) *Block {
 	var root interface{}
-	var lastBlockTime int64
 	hash := ZeroHash256
 
 	if bc.CurrentBlock != nil {
 		root = bc.CurrentBlock.state.Trie.Root
 		hash = bc.LastBlockHash
-		lastBlockTime = bc.CurrentBlock.Time
 	}
 
 	block := CreateBlock(
@@ -60,21 +59,42 @@ func (bc *BlockChain) NewBlock(coinbase []byte) *Block {
 
 	parent := bc.CurrentBlock
 	if parent != nil {
-		diff := new(big.Int)
-
-		adjust := new(big.Int).Rsh(parent.Difficulty, 10)
-		if block.Time >= lastBlockTime+5 {
-			diff.Sub(parent.Difficulty, adjust)
-		} else {
-			diff.Add(parent.Difficulty, adjust)
-		}
-		block.Difficulty = diff
+		block.Difficulty = CalcDifficulty(block, parent)
 		block.Number = new(big.Int).Add(bc.CurrentBlock.Number, ethutil.Big1)
 		block.GasLimit = block.CalcGasLimit(bc.CurrentBlock)
 
 	}
 
 	return block
+}
+
+func CalcDifficulty(block, parent *Block) *big.Int {
+	diff := new(big.Int)
+
+	adjust := new(big.Int).Rsh(parent.Difficulty, 10)
+	if block.Time >= parent.Time+5 {
+		diff.Sub(parent.Difficulty, adjust)
+	} else {
+		diff.Add(parent.Difficulty, adjust)
+	}
+
+	return diff
+}
+
+func (bc *BlockChain) Reset() {
+	AddTestNetFunds(bc.genesisBlock)
+
+	bc.genesisBlock.state.Trie.Sync()
+	// Prepare the genesis block
+	bc.Add(bc.genesisBlock)
+	fk := append([]byte("bloom"), bc.genesisBlock.Hash()...)
+	bc.Ethereum.Db().Put(fk, make([]byte, 255))
+	bc.CurrentBlock = bc.genesisBlock
+
+	bc.SetTotalDifficulty(ethutil.Big("0"))
+
+	// Set the last know difficulty (might be 0x0 as initial value, Genesis)
+	bc.TD = ethutil.BigD(ethutil.Config.Db.LastKnownTD())
 }
 
 func (bc *BlockChain) HasBlock(hash []byte) bool {
@@ -148,27 +168,21 @@ func AddTestNetFunds(block *Block) {
 }
 
 func (bc *BlockChain) setLastBlock() {
-	// Prep genesis
-	AddTestNetFunds(bc.genesisBlock)
-
 	data, _ := ethutil.Config.Db.Get([]byte("LastBlock"))
 	if len(data) != 0 {
+		// Prep genesis
+		AddTestNetFunds(bc.genesisBlock)
+
 		block := NewBlockFromBytes(data)
 		bc.CurrentBlock = block
 		bc.LastBlockHash = block.Hash()
 		bc.LastBlockNumber = block.Number.Uint64()
 
+		// Set the last know difficulty (might be 0x0 as initial value, Genesis)
+		bc.TD = ethutil.BigD(ethutil.Config.Db.LastKnownTD())
 	} else {
-		bc.genesisBlock.state.Trie.Sync()
-		// Prepare the genesis block
-		bc.Add(bc.genesisBlock)
-		fk := append([]byte("bloom"), bc.genesisBlock.Hash()...)
-		bc.Ethereum.Db().Put(fk, make([]byte, 255))
-		bc.CurrentBlock = bc.genesisBlock
+		bc.Reset()
 	}
-
-	// Set the last know difficulty (might be 0x0 as initial value, Genesis)
-	bc.TD = ethutil.BigD(ethutil.Config.Db.LastKnownTD())
 
 	chainlogger.Infof("Last block (#%d) %x\n", bc.LastBlockNumber, bc.CurrentBlock.Hash())
 }
@@ -189,6 +203,26 @@ func (bc *BlockChain) Add(block *Block) {
 	encodedBlock := block.RlpEncode()
 	ethutil.Config.Db.Put(block.Hash(), encodedBlock)
 	ethutil.Config.Db.Put([]byte("LastBlock"), encodedBlock)
+}
+
+func (self *BlockChain) CalcTotalDiff(block *Block) (*big.Int, error) {
+	parent := self.GetBlock(block.PrevHash)
+	if parent == nil {
+		return nil, fmt.Errorf("Unable to calculate total diff without known parent %x", block.PrevHash)
+	}
+
+	parentTd := parent.BlockInfo().TD
+
+	uncleDiff := new(big.Int)
+	for _, uncle := range block.Uncles {
+		uncleDiff = uncleDiff.Add(uncleDiff, uncle.Difficulty)
+	}
+
+	td := new(big.Int)
+	td = td.Add(parentTd, uncleDiff)
+	td = td.Add(td, block.Difficulty)
+
+	return td, nil
 }
 
 func (bc *BlockChain) GetBlock(hash []byte) *Block {
@@ -215,6 +249,16 @@ func (self *BlockChain) GetBlockByNumber(num uint64) *Block {
 	return block
 }
 
+func (self *BlockChain) GetBlockBack(num uint64) *Block {
+	block := self.CurrentBlock
+
+	for ; num != 0 && block != nil; num-- {
+		block = self.GetBlock(block.PrevHash)
+	}
+
+	return block
+}
+
 func (bc *BlockChain) BlockInfoByHash(hash []byte) BlockInfo {
 	bi := BlockInfo{}
 	data, _ := ethutil.Config.Db.Get(append(hash, []byte("Info")...))
@@ -234,7 +278,7 @@ func (bc *BlockChain) BlockInfo(block *Block) BlockInfo {
 // Unexported method for writing extra non-essential block info to the db
 func (bc *BlockChain) writeBlockInfo(block *Block) {
 	bc.LastBlockNumber++
-	bi := BlockInfo{Number: bc.LastBlockNumber, Hash: block.Hash(), Parent: block.PrevHash}
+	bi := BlockInfo{Number: bc.LastBlockNumber, Hash: block.Hash(), Parent: block.PrevHash, TD: bc.TD}
 
 	// For now we use the block hash with the words "info" appended as key
 	ethutil.Config.Db.Put(append(block.Hash(), []byte("Info")...), bi.RlpEncode())

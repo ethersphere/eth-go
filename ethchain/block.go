@@ -18,6 +18,7 @@ type BlockInfo struct {
 	Number uint64
 	Hash   []byte
 	Parent []byte
+	TD     *big.Int
 }
 
 func (bi *BlockInfo) RlpDecode(data []byte) {
@@ -26,10 +27,11 @@ func (bi *BlockInfo) RlpDecode(data []byte) {
 	bi.Number = decoder.Get(0).Uint()
 	bi.Hash = decoder.Get(1).Bytes()
 	bi.Parent = decoder.Get(2).Bytes()
+	bi.TD = decoder.Get(3).BigInt()
 }
 
 func (bi *BlockInfo) RlpEncode() []byte {
-	return ethutil.Encode([]interface{}{bi.Number, bi.Hash, bi.Parent})
+	return ethutil.Encode([]interface{}{bi.Number, bi.Hash, bi.Parent, bi.TD})
 }
 
 type Blocks []*Block
@@ -142,12 +144,12 @@ func CreateBlock(root interface{},
 
 // Returns a hash of the block
 func (block *Block) Hash() ethutil.Bytes {
-	return ethcrypto.Sha3Bin(ethutil.NewValue(block.header()).Encode())
-	//return ethcrypto.Sha3Bin(block.Value().Encode())
+	return ethcrypto.Sha3(ethutil.NewValue(block.header()).Encode())
+	//return ethcrypto.Sha3(block.Value().Encode())
 }
 
 func (block *Block) HashNoNonce() []byte {
-	return ethcrypto.Sha3Bin(ethutil.Encode([]interface{}{block.PrevHash,
+	return ethcrypto.Sha3(ethutil.Encode([]interface{}{block.PrevHash,
 		block.UncleSha, block.Coinbase, block.state.Trie.Root,
 		block.TxSha, block.Difficulty, block.Number, block.MinGasPrice,
 		block.GasLimit, block.GasUsed, block.Time, block.Extra}))
@@ -235,7 +237,7 @@ func (block *Block) SetUncles(uncles []*Block) {
 	block.Uncles = uncles
 
 	// Sha of the concatenated uncles
-	block.UncleSha = ethcrypto.Sha3Bin(ethutil.Encode(block.rlpUncles()))
+	block.UncleSha = ethcrypto.Sha3(ethutil.Encode(block.rlpUncles()))
 }
 
 func (self *Block) SetReceipts(receipts []*Receipt, txs []*Transaction) {
@@ -346,8 +348,16 @@ func NewUncleBlockFromValue(header *ethutil.Value) *Block {
 	return block
 }
 
+func (block *Block) Trie() *ethtrie.Trie {
+	return block.state.Trie
+}
+
 func (block *Block) GetRoot() interface{} {
 	return block.state.Trie.Root
+}
+
+func (block *Block) Diff() *big.Int {
+	return block.Difficulty
 }
 
 func (self *Block) Receipts() []*Receipt {

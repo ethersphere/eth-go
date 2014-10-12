@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"net"
 	"path"
@@ -22,11 +23,12 @@ import (
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
 	"github.com/ethereum/eth-go/ethwire"
+	"github.com/ethereum/eth-go/eventer"
 )
 
 const (
 	seedTextFileUri string = "http://www.ethereum.org/servers.poc3.txt"
-	seedNodeAddress        = "54.76.56.74:30303"
+	seedNodeAddress        = "poc-6.ethdev.com:30303"
 )
 
 var ethlogger = ethlog.NewLogger("SERV")
@@ -58,13 +60,17 @@ type Ethereum struct {
 	blockChain *ethchain.BlockChain
 	// The block pool
 	blockPool *BlockPool
-	// Peers (NYI)
+	// Eventer
+	eventer *eventer.EventMachine
+	// Peers
 	peers *list.List
 	// Nonce
 	Nonce uint64
 
 	Addr net.Addr
 	Port string
+
+	blacklist [][]byte
 
 	peerMut sync.Mutex
 
@@ -90,7 +96,9 @@ type Ethereum struct {
 
 	isUpToDate bool
 
-	filters map[int]*ethchain.Filter
+	filterMu sync.RWMutex
+	filterId int
+	filters  map[int]*ethchain.Filter
 }
 
 func New(db ethutil.Database, clientIdentity ethwire.ClientIdentity, keyManager *ethcrypto.KeyManager, caps Caps, usePnp bool) (*Ethereum, error) {
@@ -126,6 +134,7 @@ func New(db ethutil.Database, clientIdentity ethwire.ClientIdentity, keyManager 
 		filters:        make(map[int]*ethchain.Filter),
 	}
 	ethereum.reactor = ethreact.New()
+	ethereum.eventer = eventer.New()
 
 	ethereum.blockPool = NewBlockPool(ethereum)
 	ethereum.txPool = ethchain.NewTxPool(ethereum)
@@ -161,6 +170,12 @@ func (s *Ethereum) StateManager() *ethchain.StateManager {
 func (s *Ethereum) TxPool() *ethchain.TxPool {
 	return s.txPool
 }
+func (s *Ethereum) BlockPool() *BlockPool {
+	return s.blockPool
+}
+func (s *Ethereum) Eventer() *eventer.EventMachine {
+	return s.eventer
+}
 func (self *Ethereum) Db() ethutil.Database {
 	return self.db
 }
@@ -190,6 +205,22 @@ func (s *Ethereum) PushPeer(peer *Peer) {
 }
 func (s *Ethereum) IsListening() bool {
 	return s.listening
+}
+
+func (s *Ethereum) HighestTDPeer() (td *big.Int) {
+	td = big.NewInt(0)
+
+	eachPeer(s.peers, func(p *Peer, v *list.Element) {
+		if p.td.Cmp(td) > 0 {
+			td = p.td
+		}
+	})
+
+	return
+}
+
+func (self *Ethereum) BlacklistPeer(peer *Peer) {
+	self.blacklist = append(self.blacklist, peer.pubkey)
 }
 
 func (s *Ethereum) AddPeer(conn net.Conn) {
@@ -360,7 +391,7 @@ func (s *Ethereum) RemovePeer(p *Peer) {
 	})
 }
 
-func (s *Ethereum) ReapDeadPeerHandler() {
+func (s *Ethereum) reapDeadPeerHandler() {
 	reapTimer := time.NewTicker(processReapingTimeout * time.Second)
 
 	for {
@@ -374,6 +405,9 @@ func (s *Ethereum) ReapDeadPeerHandler() {
 // Start the ethereum
 func (s *Ethereum) Start(seed bool) {
 	s.reactor.Start()
+	s.blockPool.Start()
+	s.stateManager.Start()
+
 	// Bind to addr and port
 	ln, err := net.Listen("tcp", ":"+s.Port)
 	if err != nil {
@@ -392,7 +426,7 @@ func (s *Ethereum) Start(seed bool) {
 	}
 
 	// Start the reaping processes
-	go s.ReapDeadPeerHandler()
+	go s.reapDeadPeerHandler()
 	go s.update()
 	go s.filterLoop()
 
@@ -403,6 +437,8 @@ func (s *Ethereum) Start(seed bool) {
 }
 
 func (s *Ethereum) Seed() {
+	// Sorry Py person. I must blacklist. you perform badly
+	s.blacklist = append(s.blacklist, ethutil.Hex2Bytes("64656330303561383532336435376331616537643864663236623336313863373537353163636634333530626263396330346237336262623931383064393031"))
 	ips := PastPeers()
 	if len(ips) > 0 {
 		for _, ip := range ips {
@@ -494,6 +530,7 @@ func (s *Ethereum) Stop() {
 	s.stateManager.Stop()
 	s.reactor.Flush()
 	s.reactor.Stop()
+	s.blockPool.Stop()
 
 	ethlogger.Infoln("Server stopped")
 	close(s.shutdownChan)
@@ -563,22 +600,29 @@ out:
 	}
 }
 
-var filterId = 0
-
-func (self *Ethereum) InstallFilter(object map[string]interface{}) (*ethchain.Filter, int) {
-	defer func() { filterId++ }()
-
-	filter := ethchain.NewFilterFromMap(object, self)
-	self.filters[filterId] = filter
-
-	return filter, filterId
+// InstallFilter adds filter for blockchain events.
+// The filter's callbacks will run for matching blocks and messages.
+// The filter should not be modified after it has been installed.
+func (self *Ethereum) InstallFilter(filter *ethchain.Filter) (id int) {
+	self.filterMu.Lock()
+	id = self.filterId
+	self.filters[id] = filter
+	self.filterId++
+	self.filterMu.Unlock()
+	return id
 }
 
 func (self *Ethereum) UninstallFilter(id int) {
+	self.filterMu.Lock()
 	delete(self.filters, id)
+	self.filterMu.Unlock()
 }
 
+// GetFilter retrieves a filter installed using InstallFilter.
+// The filter may not be modified.
 func (self *Ethereum) GetFilter(id int) *ethchain.Filter {
+	self.filterMu.RLock()
+	defer self.filterMu.RUnlock()
 	return self.filters[id]
 }
 
@@ -596,14 +640,17 @@ out:
 			break out
 		case block := <-blockChan:
 			if block, ok := block.Resource.(*ethchain.Block); ok {
+				self.filterMu.RLock()
 				for _, filter := range self.filters {
 					if filter.BlockCallback != nil {
 						filter.BlockCallback(block)
 					}
 				}
+				self.filterMu.RUnlock()
 			}
 		case msg := <-messageChan:
 			if messages, ok := msg.Resource.(ethstate.Messages); ok {
+				self.filterMu.RLock()
 				for _, filter := range self.filters {
 					if filter.MessageCallback != nil {
 						msgs := filter.FilterMessages(messages)
@@ -612,6 +659,7 @@ out:
 						}
 					}
 				}
+				self.filterMu.RUnlock()
 			}
 		}
 	}
