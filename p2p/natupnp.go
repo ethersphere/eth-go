@@ -1,4 +1,4 @@
-package ethp2p
+package p2p
 
 // Just enough UPnP to be able to forward ports
 //
