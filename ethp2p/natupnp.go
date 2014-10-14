@@ -20,7 +20,7 @@ type upnpNAT struct {
 	ourIP      string
 }
 
-func Discover() (nat NAT, err error) {
+func upnpDiscover(attempts int) (nat NAT, err error) {
 	ssdp, err := net.ResolveUDPAddr("udp4", "239.255.255.250:1900")
 	if err != nil {
 		return
@@ -46,7 +46,7 @@ func Discover() (nat NAT, err error) {
 			"MX: 2\r\n\r\n")
 	message := buf.Bytes()
 	answerBytes := make([]byte, 1024)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < attempts; i++ {
 		_, err = socket.WriteToUDP(message, ssdp)
 		if err != nil {
 			return
@@ -232,7 +232,7 @@ func soapRequest(url, function, message string) (r *http.Response, err error) {
 
 	req, err := http.NewRequest("POST", url, strings.NewReader(fullMessage))
 	if err != nil {
-		return nil, err
+		return
 	}
 	req.Header.Set("Content-Type", "text/xml ; charset=\"utf-8\"")
 	req.Header.Set("User-Agent", "Darwin/10.0.0, UPnP/1.0, MiniUPnPc/1.3")
@@ -241,9 +241,6 @@ func soapRequest(url, function, message string) (r *http.Response, err error) {
 	req.Header.Set("Connection", "Close")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
-
-	// log.Stderr("soapRequest ", req)
-	//fmt.Println(fullMessage)
 
 	r, err = http.DefaultClient.Do(req)
 	if err != nil {
