@@ -72,12 +72,6 @@ func (self *StateTransition) Receiver() *ethstate.StateObject {
 	return self.rec
 }
 
-func (self *StateTransition) MakeStateObject(state *ethstate.State, tx *Transaction) *ethstate.StateObject {
-	contract := MakeContract(tx, state)
-
-	return contract
-}
-
 func (self *StateTransition) UseGas(amount *big.Int) error {
 	if self.gas.Cmp(amount) < 0 {
 		return OutOfGasError()
@@ -190,7 +184,7 @@ func (self *StateTransition) TransitionState() (err error) {
 		snapshot = self.state.Copy()
 
 		// Create a new state object for the contract
-		receiver = self.MakeStateObject(self.state, tx)
+		receiver := MakeContract(tx, self.state)
 		self.rec = receiver
 		if receiver == nil {
 			return fmt.Errorf("Unable to create contract")
@@ -270,7 +264,8 @@ func (self *StateTransition) Eval(msg *ethstate.Message, script []byte, context 
 		callerClosure = ethvm.NewClosure(msg, transactor, context, script, self.gas, self.gasPrice)
 	)
 
-	vm := ethvm.New(env, ethvm.Type(ethutil.Config.VmType))
+	//vm := ethvm.New(env, ethvm.Type(ethutil.Config.VmType))
+	vm := ethvm.New(env, ethvm.DebugVmTy)
 
 	ret, _, err = callerClosure.Call(vm, self.tx.Data)
 
