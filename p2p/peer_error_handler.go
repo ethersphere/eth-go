@@ -74,6 +74,8 @@ func (self *PeerErrorHandler) handle(peerError *PeerError) {
 		reason = DiscReadTimeout
 	case ReadError, WriteError, MiscError:
 		reason = DiscNetworkError
+	case InvalidGenesis, InvalidNetworkId, InvalidProtocolVersion:
+		reason = DiscSubprotocolError
 	default:
 		self.severity += self.getSeverity(peerError)
 	}

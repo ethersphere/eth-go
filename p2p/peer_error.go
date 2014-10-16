@@ -16,6 +16,7 @@ const (
 	WriteError
 	MiscError
 	InvalidMsgCode
+	InvalidMsg
 	P2PVersionMismatch
 	PubkeyMissing
 	PubkeyInvalid
@@ -23,23 +24,30 @@ const (
 	ProtocolBreach
 	PortMismatch
 	PingTimeout
+	InvalidGenesis
+	InvalidNetworkId
+	InvalidProtocolVersion
 )
 
 var errorToString = map[ErrorCode]string{
-	PacketTooShort:     "Packet too short",
-	PayloadTooShort:    "Payload too short",
-	MagicTokenMismatch: "Magic token mismatch",
-	ReadError:          "Read error",
-	WriteError:         "Write error",
-	MiscError:          "Misc error",
-	InvalidMsgCode:     "Invalid message code",
-	P2PVersionMismatch: "P2P Version Mismatch",
-	PubkeyMissing:      "Public key missing",
-	PubkeyInvalid:      "Public key invalid",
-	PubkeyForbidden:    "Public key forbidden",
-	ProtocolBreach:     "Protocol Breach",
-	PortMismatch:       "Port mismatch",
-	PingTimeout:        "Ping timeout",
+	PacketTooShort:         "Packet too short",
+	PayloadTooShort:        "Payload too short",
+	MagicTokenMismatch:     "Magic token mismatch",
+	ReadError:              "Read error",
+	WriteError:             "Write error",
+	MiscError:              "Misc error",
+	InvalidMsgCode:         "Invalid message code",
+	InvalidMsg:             "Invalid message",
+	P2PVersionMismatch:     "P2P Version Mismatch",
+	PubkeyMissing:          "Public key missing",
+	PubkeyInvalid:          "Public key invalid",
+	PubkeyForbidden:        "Public key forbidden",
+	ProtocolBreach:         "Protocol Breach",
+	PortMismatch:           "Port mismatch",
+	PingTimeout:            "Ping timeout",
+	InvalidGenesis:         "Invalid genesis block",
+	InvalidNetworkId:       "Invalid network id",
+	InvalidProtocolVersion: "Invalid protocol version",
 }
 
 type PeerError struct {
