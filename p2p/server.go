@@ -157,9 +157,16 @@ func (self *Server) PeersMessage() (msg *Msg, err error) {
 	return
 }
 
+var getPeersMsg, _ = NewMsg(GetPeersMsg)
+
 func (self *Server) PeerConnect(addr net.Addr) {
 	// TODO: should buffer, filter and uniq
-	self.peerConnect <- addr
+	// send GetPeersMsg if not blocking
+	select {
+	case self.peerConnect <- addr: // not enough peers
+		self.Broadcast("", getPeersMsg)
+	default: // we dont care
+	}
 }
 
 func (self *Server) PeerDisconnect() chan DisconnectRequest {
@@ -365,7 +372,7 @@ func (self *Server) addPeer(conn net.Conn, address net.Addr, inbound bool, slot 
 	defer self.peersLock.Unlock()
 	if self.closed {
 		fmt.Println("oopsy, not no longer need peer")
-		conn.Close()           //oopsy my bad
+		conn.Close()           //oopsy our bad
 		self.peerSlots <- slot // release slot
 	} else {
 		peer := NewPeer(conn, address, inbound, self)
