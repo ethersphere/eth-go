@@ -37,7 +37,7 @@ func TestPeer(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	pro, _ := peer.Messenger().protocols[0].(*BaseProtocol)
-	if pro.state != HandshakeReceived {
+	if pro.state != handshakeReceived {
 		t.Errorf("handshake not received")
 	}
 	if peer.Port != 30 {

@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"net"
 	"sort"
-	// "strconv"
 	"sync"
 	"time"
-
-	// "github.com/ethereum/eth-go/ethutil"
 )
+
+type Protocol interface {
+	Start()
+	HandleIn(*Msg, chan *Msg)
+	HandleOut(*Msg) bool
+	Offset() MsgCode
+	Name() string
+}
 
 const (
 	P2PVersion      = 0
@@ -31,8 +36,8 @@ const (
 type ProtocolState uint8
 
 const (
-	ClosedState = iota
-	HandshakeReceived
+	nullState = iota
+	handshakeReceived
 )
 
 type DiscReason byte
@@ -97,7 +102,7 @@ func NewBaseProtocol(peer *Peer) *BaseProtocol {
 func (self *BaseProtocol) Start() {
 	if self.peer != nil {
 		self.peer.Write("", self.peer.Server().Handshake())
-		go self.peer.Messenger().HeartMonitor(
+		go self.peer.Messenger().PingPong(
 			pingTimeout*time.Second,
 			pingGracePeriod*time.Second,
 			self.Ping,
@@ -137,8 +142,9 @@ func (self *BaseProtocol) HandleIn(msg *Msg, response chan *Msg) {
 	if msg.Code() == HandshakeMsg {
 		self.handleHandshake(msg)
 	} else {
-		if !self.CheckState(HandshakeReceived) {
+		if !self.CheckState(handshakeReceived) {
 			self.peerError(ProtocolBreach, "message code %v not allowed", msg.Code())
+			close(response)
 			return
 		}
 		switch msg.Code() {
@@ -168,7 +174,7 @@ func (self *BaseProtocol) HandleIn(msg *Msg, response chan *Msg) {
 
 func (self *BaseProtocol) HandleOut(msg *Msg) (allowed bool) {
 	// somewhat overly paranoid
-	allowed = msg.Code() == HandshakeMsg || msg.Code() == DiscMsg || msg.Code() < self.Offset() && self.CheckState(HandshakeReceived)
+	allowed = msg.Code() == HandshakeMsg || msg.Code() == DiscMsg || msg.Code() < self.Offset() && self.CheckState(handshakeReceived)
 	return
 }
 
@@ -194,7 +200,7 @@ func (self *BaseProtocol) handlePeers(msg *Msg) {
 func (self *BaseProtocol) handleHandshake(msg *Msg) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	if self.state != ClosedState {
+	if self.state != nullState {
 		self.peerError(ProtocolBreach, "extra handshake")
 		return
 	}
@@ -260,7 +266,7 @@ func (self *BaseProtocol) handleHandshake(msg *Msg) {
 
 	self.peer.Id = id
 
-	self.state = HandshakeReceived
+	self.state = handshakeReceived
 
 	//p.ethereum.PushPeer(p)
 	// p.ethereum.reactor.Post("peerList", p.ethereum.Peers())
