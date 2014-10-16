@@ -1,4 +1,4 @@
-package ethp2p
+package p2p
 
 import (
 	// "fmt"
@@ -111,7 +111,7 @@ func TestPulse(t *testing.T) {
 	timeout := false
 	pingTimeout := 10 * time.Millisecond
 	gracePeriod := 200 * time.Millisecond
-	go mess.HeartMonitor(pingTimeout, gracePeriod, func() { ping = true }, func() { timeout = true })
+	go mess.PingPong(pingTimeout, gracePeriod, func() { ping = true }, func() { timeout = true })
 	net.In(0, Packet(0, 1))
 	if ping {
 		t.Errorf("ping sent too early")

@@ -12,16 +12,6 @@ const (
 
 type Handlers map[string](func(p *Peer) Protocol)
 
-// type Peer struct{}
-
-type Protocol interface {
-	Start()
-	HandleIn(*Msg, chan *Msg)
-	HandleOut(*Msg) bool
-	Offset() MsgCode
-	Name() string
-}
-
 type Messenger struct {
 	conn          *Connection
 	peer          *Peer
@@ -147,8 +137,8 @@ func (self *Messenger) getProtocol(code MsgCode) (Protocol, MsgCode, *PeerError)
 	return nil, MsgCode(0), NewPeerError(InvalidMsgCode, " %v", code)
 }
 
-func (self *Messenger) HeartMonitor(timeout time.Duration, gracePeriod time.Duration, pingCallback func(), timeoutCallback func()) {
-	fmt.Println("heart beat monitoring at %v", time.Now())
+func (self *Messenger) PingPong(timeout time.Duration, gracePeriod time.Duration, pingCallback func(), timeoutCallback func()) {
+	fmt.Printf("pingpong keepalive started at %v", time.Now())
 
 	timer := time.After(timeout)
 	pinged := false
@@ -164,11 +154,11 @@ func (self *Messenger) HeartMonitor(timeout time.Duration, gracePeriod time.Dura
 			}
 		case <-timer:
 			if pinged {
-				fmt.Println("timeout at %v", time.Now())
+				fmt.Printf("timeout at %v", time.Now())
 				timeoutCallback()
 				return
 			} else {
-				fmt.Println("pinged at %v", time.Now())
+				fmt.Printf("pinged at %v", time.Now())
 				pingCallback()
 				timer = time.After(gracePeriod)
 				pinged = true
