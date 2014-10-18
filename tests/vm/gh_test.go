@@ -87,7 +87,6 @@ func RunVmTest(url string, t *testing.T) {
 }
 
 // I've created a new function for each tests so it's easier to identify where the problem lies if any of them fail.
-
 func TestVMArithmetic(t *testing.T) {
 	const url = "https://raw.githubusercontent.com/ethereum/tests/develop/vmtests/vmArithmeticTest.json"
 	RunVmTest(url, t)
