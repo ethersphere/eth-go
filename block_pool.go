@@ -11,8 +11,8 @@ import (
 
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethlog"
+	"github.com/ethereum/eth-go/ethp2p"
 	"github.com/ethereum/eth-go/ethutil"
-	"github.com/ethereum/eth-go/ethwire"
 )
 
 var poollogger = ethlog.NewLogger("BPOOL")
@@ -83,33 +83,22 @@ func (self *BlockPool) Blocks() (blocks ethchain.Blocks) {
 	return
 }
 
-func (self *BlockPool) FetchHashes(peer *Peer) bool {
-	highestTd := self.eth.HighestTDPeer()
-
-	if (self.peer == nil && peer.td.Cmp(highestTd) >= 0) || (self.peer != nil && peer.td.Cmp(self.peer.td) > 0) || self.peer == peer {
-		if self.peer != peer {
-			poollogger.Debugf("Found better suitable peer (%v vs %v)\n", self.td, peer.td)
-
-			if self.peer != nil {
-				self.peer.doneFetchingHashes = true
-			}
-		}
-
+func (self *BlockPool) HighestTD(td *big.Int, peer *Peer) (newpeer bool) {
+	self.tdlock.Lock()
+	defer self.tdlock.Unlock()
+	if self.peer == nil && td.Cmp(self.td) >= 0 {
 		self.peer = peer
-		self.td = peer.td
-
-		if !self.HasLatestHash() {
-			peer.doneFetchingHashes = false
-
-			const amount = 256
-			peerlogger.Debugf("Fetching hashes (%d) %x...\n", amount, peer.lastReceivedHash[0:4])
-			peer.QueueMessage(ethwire.NewMessage(ethwire.MsgGetBlockHashesTy, []interface{}{peer.lastReceivedHash, uint32(amount)}))
-		}
-
-		return true
+		self.td = td
+		newpeer = true
+		poollogger.Debugf("Found suitable peer (%v)\n", td)
 	}
-
-	return false
+	if self.peer != nil && td.Cmp(self.td) > 0 {
+		self.peer = peer
+		self.td = td
+		newpeer = true
+		poollogger.Debugf("Found peer with higher td (%v > %v)\n", td, self.td)
+	}
+	return
 }
 
 func (self *BlockPool) AddHash(hash []byte, peer *Peer) {
@@ -226,7 +215,6 @@ func (self *BlockPool) DistributeHashes() {
 }
 
 func (self *BlockPool) Start() {
-	go self.downloadThread()
 	go self.chainThread()
 }
 
@@ -234,23 +222,15 @@ func (self *BlockPool) Stop() {
 	close(self.quit)
 }
 
-func (self *BlockPool) downloadThread() {
-	serviceTimer := time.NewTicker(100 * time.Millisecond)
-out:
-	for {
-		select {
-		case <-self.quit:
-			break out
-		case <-serviceTimer.C:
-			// Check if we're catching up. If not distribute the hashes to
-			// the peers and download the blockchain
-			self.fetchingHashes = false
-			eachPeer(self.eth.peers, func(p *Peer, v *list.Element) {
-				if p.statusKnown && p.FetchingHashes() {
-					self.fetchingHashes = true
-				}
-			})
-
+func (self *BlockPool) FetchHashes() sync.WaitGroup {
+	self.fetchHashLock.Lock()
+	defer self.fetchHashLock.Unlock()
+	if self.fetchHashGroup == nil {
+		self.fetchHashGroup = &sync.WaitGroup{}
+		self.fetchHashGroup.Add(1)
+		go func() {
+			self.fetchHashGroup.Wait()
+			self.fetchHashGroup = nil
 			if len(self.hashes) > 0 {
 				self.DistributeHashes()
 			}
@@ -258,20 +238,29 @@ out:
 			if self.ChainLength < len(self.hashes) {
 				self.ChainLength = len(self.hashes)
 			}
-
-			/*
-				if !self.fetchingHashes {
-					blocks := self.Blocks()
-					ethchain.BlockBy(ethchain.Number).Sort(blocks)
-
-					if len(blocks) > 0 {
-						if !self.eth.BlockChain().HasBlock(b.PrevHash) && self.pool[string(b.PrevHash)] == nil && !self.fetchingHashes {
-						}
-					}
-				}
-			*/
-		}
+		}()
+	} else {
+		self.fetchHashGroup.Add(1)
 	}
+	return *self.fetchHashGroup
+}
+
+func (self *BlockPool) ChainSync() sync.WaitGroup {
+	self.synclock.Lock()
+	defer self.synclock.Unlock()
+	if self.syncGroup == nil {
+		self.syncGroup = &sync.WaitGroup{}
+		self.syncGroup.Add(1)
+		self.eth.reactor.Post("chainSync", true)
+		go func() {
+			self.syncGroup.Wait()
+			self.eth.reactor.Post("chainSync", false)
+			self.syncGroup = nil
+		}()
+	} else {
+		self.syncGroup.Add(1)
+	}
+	return *self.syncGroup
 }
 
 func (self *BlockPool) chainThread() {
@@ -330,8 +319,8 @@ out:
 
 				poollogger.Debugf("Punishing peer for supplying bad chain (%v)\n", self.peer.conn.RemoteAddr())
 				// This peer gave us bad hashes and made us fetch a bad chain, therefor he shall be punished.
-				self.eth.BlacklistPeer(self.peer)
-				self.peer.StopWithReason(DiscBadPeer)
+				self.eth.BlacklistPeer(self.peer.Pubkey)
+				self.peer.PeerErrorChan() <- p2p.NewPeerError(p2p.ProtocolBreach, "bad chain")
 				self.td = ethutil.Big0
 				self.peer = nil
 			}
