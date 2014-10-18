@@ -38,7 +38,6 @@ func NewPeer(conn net.Conn, address net.Addr, inbound bool, server *Server) *Pee
 	host, port, _ := net.SplitHostPort(address.String())
 	intport, _ := strconv.Atoi(port)
 	peer := &Peer{
-		// quit:      make(chan chan bool),
 		Inbound:       inbound,
 		Address:       address,
 		Port:          uint16(intport),

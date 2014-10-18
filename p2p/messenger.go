@@ -43,12 +43,19 @@ func NewMessenger(peer *Peer, conn *Connection, errchan chan *PeerError, handler
 func (self *Messenger) Start() {
 	self.conn.Open()
 	go self.messenger()
+	self.protocolLock.RLock()
+	defer self.protocolLock.RUnlock()
 	self.protocols[0].Start()
 }
 
 func (self *Messenger) Stop() {
-	// close pulse to stop heart monitoring
+	// close pulse to stop ping pong monitoring
 	close(self.pulse)
+	self.protocolLock.RLock()
+	defer self.protocolLock.RUnlock()
+	for _, protocol := range self.protocols {
+		protocol.Stop() // could be parallel
+	}
 	q := make(chan bool)
 	self.quit <- q
 	<-q
@@ -183,6 +190,7 @@ func (self *Messenger) AddProtocols(protocols []string) {
 
 			self.offsets = append(self.offsets, offset)
 			self.protocols = append(self.protocols, protocol)
+			protocol.Start()
 		} else {
 			fmt.Println("no ", name)
 			// protocol not handled

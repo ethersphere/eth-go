@@ -11,6 +11,7 @@ import (
 
 type Protocol interface {
 	Start()
+	Stop()
 	HandleIn(*Msg, chan *Msg)
 	HandleOut(*Msg) bool
 	Offset() MsgCode
@@ -109,6 +110,9 @@ func (self *BaseProtocol) Start() {
 			self.Timeout,
 		)
 	}
+}
+
+func (self *BaseProtocol) Stop() {
 }
 
 func (self *BaseProtocol) Ping() {
