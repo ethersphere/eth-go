@@ -25,6 +25,9 @@ type TestProtocol struct {
 func (self *TestProtocol) Start() {
 }
 
+func (self *TestProtocol) Stop() {
+}
+
 func (self *TestProtocol) Offset() MsgCode {
 	return MsgCode(5)
 }
