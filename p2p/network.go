@@ -146,14 +146,33 @@ out:
 	}
 }
 
-func (*TCPNetwork) address2IP(address string) (ip net.IP, port string, err error) {
-	var ahost string
-	ahost, port, _ = net.SplitHostPort(address)
-	if ip = net.ParseIP(ahost); ip != nil {
+func (*TCPNetwork) NewAddr(host string, port int) (net.Addr, error) {
+	var ip net.IP
+	ip, err = lookupIP(host)
+	if err == nil {
+		return &net.TCPAddr{
+			IP:   ip,
+			Port: port,
+		}, nil
+	}
+	return nil, err
+}
+
+func (*TCPNetwork) ParseAddr(address string) (net.Addr, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err == nil {
+		return NewAddr(host, strconv.Atoi(port))
+	}
+	return nil, err
+}
+
+func (*TCPNetwork) lookupIP(host string) (ip net.IP, err error) {
+	if ip = net.ParseIP(host); ip != nil {
 		return
 	}
+
 	var ips []net.IP
-	ips, err = net.LookupIP(ahost)
+	ips, err = net.LookupIP(host)
 	if err != nil {
 		logger.Warnln(err)
 		return
