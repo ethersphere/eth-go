@@ -146,9 +146,8 @@ out:
 	}
 }
 
-func (*TCPNetwork) NewAddr(host string, port int) (net.Addr, error) {
-	var ip net.IP
-	ip, err = lookupIP(host)
+func (self *TCPNetwork) NewAddr(host string, port int) (net.Addr, error) {
+	ip, err := self.lookupIP(host)
 	if err == nil {
 		return &net.TCPAddr{
 			IP:   ip,
@@ -158,10 +157,12 @@ func (*TCPNetwork) NewAddr(host string, port int) (net.Addr, error) {
 	return nil, err
 }
 
-func (*TCPNetwork) ParseAddr(address string) (net.Addr, error) {
+func (self *TCPNetwork) ParseAddr(address string) (net.Addr, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err == nil {
-		return NewAddr(host, strconv.Atoi(port))
+		iport, _ := strconv.Atoi(port)
+		addr, e := self.NewAddr(host, iport)
+		return addr, e
 	}
 	return nil, err
 }
@@ -178,7 +179,7 @@ func (*TCPNetwork) lookupIP(host string) (ip net.IP, err error) {
 		return
 	}
 	if len(ips) == 0 {
-		err = fmt.Errorf("No IP addresses available for %v", ahost)
+		err = fmt.Errorf("No IP addresses available for %v", host)
 		logger.Warnln(err)
 		return
 	}
