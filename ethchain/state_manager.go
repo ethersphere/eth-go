@@ -19,19 +19,8 @@ import (
 
 var statelogger = ethlog.NewLogger("STATE")
 
-type EthManager interface {
-	StateManager() *StateManager
-	BlockChain() *BlockChain
-	TxPool() *TxPool
-	Broadcast(msgType ethwire.MsgType, data []interface{})
-	PeerCount() int
-	IsMining() bool
-	IsListening() bool
-	Peers() *list.List
-	KeyManager() *ethcrypto.KeyManager
-	ClientIdentity() ethwire.ClientIdentity
-	Db() ethutil.Database
-	EventMux() *event.TypeMux
+type Broadcaster interface {
+	Broadcast(string, *p2p.Msg)
 }
 
 type StateManager struct {
