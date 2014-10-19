@@ -181,6 +181,16 @@ func (self *Server) Handlers() Handlers {
 	return self.handlers
 }
 
+func (self *Server) Broadcast(protocol string, msg *Msg) {
+	self.peersLock.RLock()
+	defer self.peersLock.RUnlock()
+	for _, peer := range self.peers {
+		if peer != nil {
+			peer.Write(protocol, msg)
+		}
+	}
+}
+
 // Start the server
 func (self *Server) Start(listen bool, dial bool) {
 	self.network.Start()
@@ -421,16 +431,6 @@ func (self *Server) Handshake() *Msg {
 	fmt.Println(self.identity.Pubkey()[1:])
 	msg, _ := NewMsg(HandshakeMsg, P2PVersion, []byte(self.identity.String()), []interface{}{self.protocols}, self.port, self.identity.Pubkey()[1:])
 	return msg
-}
-
-func (self *Server) Broadcast(protocol string, msg *Msg) {
-	self.peersLock.RLock()
-	defer self.peersLock.RUnlock()
-	for _, peer := range self.peers {
-		if peer != nil {
-			peer.Write(protocol, msg)
-		}
-	}
 }
 
 func (self *Server) RegisterPubkey(candidate *Peer, pubkey []byte) error {
