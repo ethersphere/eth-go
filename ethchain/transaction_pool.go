@@ -57,10 +57,10 @@ type TxProcessor interface {
 // pool is being drained or synced for whatever reason the transactions
 // will simple queue up and handled when the mutex is freed.
 type TxPool struct {
-	bc       *BlockChain
-	db       ethutil.Database
-	txPool   *TxPool
-	eventMux *event.TypeMux
+	bc          *BlockChain
+	sm          *StateManager
+	eventMux    *event.TypeMux
+	broadcaster Broadcaster
 
 	// The mutex for accessing the Tx pool.
 	mutex sync.Mutex

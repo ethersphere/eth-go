@@ -2,14 +2,14 @@ package ethchain
 
 import (
 	"bytes"
-	"container/list"
+	// "container/list"
 	"fmt"
 	"math/big"
 	"os"
 	"sync"
-	"time"
+	// "time"
 
-	"github.com/ethereum/eth-go/ethcrypto"
+	// "github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethlog"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"

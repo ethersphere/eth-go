@@ -14,7 +14,10 @@ type AccountChange struct {
 
 // Filtering interface
 type Filter struct {
-	eth      EthManager
+	bc *BlockChain
+	db ethutil.Database
+	sm *StateManager
+
 	earliest int64
 	latest   int64
 	skip     int
@@ -29,8 +32,12 @@ type Filter struct {
 
 // Create a new filter which uses a bloom filter on blocks to figure out whether a particular block
 // is interesting or not.
-func NewFilter(eth EthManager) *Filter {
-	return &Filter{eth: eth}
+func NewFilter(blockChain *BlockChain, sm *StateManager, db ethutil.Database) *Filter {
+	return &Filter{
+		bc: blockChain,
+		db: db,
+		sm: sm,
+	}
 }
 
 func (self *Filter) AddAltered(address, stateAddress []byte) {
@@ -76,16 +83,16 @@ func (self *Filter) SetSkip(skip int) {
 func (self *Filter) Find() []*ethstate.Message {
 	var earliestBlockNo uint64 = uint64(self.earliest)
 	if self.earliest == -1 {
-		earliestBlockNo = self.eth.BlockChain().CurrentBlock.Number.Uint64()
+		earliestBlockNo = self.bc.CurrentBlock.Number.Uint64()
 	}
 	var latestBlockNo uint64 = uint64(self.latest)
 	if self.latest == -1 {
-		latestBlockNo = self.eth.BlockChain().CurrentBlock.Number.Uint64()
+		latestBlockNo = self.bc.CurrentBlock.Number.Uint64()
 	}
 
 	var (
 		messages []*ethstate.Message
-		block    = self.eth.BlockChain().GetBlockByNumber(latestBlockNo)
+		block    = self.bc.GetBlockByNumber(latestBlockNo)
 		quit     bool
 	)
 	for i := 0; !quit && block != nil; i++ {
@@ -101,7 +108,7 @@ func (self *Filter) Find() []*ethstate.Message {
 		// current parameters
 		if self.bloomFilter(block) {
 			// Get the messages of the block
-			msgs, err := self.eth.StateManager().GetMessages(block)
+			msgs, err := self.sm.GetMessages(block)
 			if err != nil {
 				chainlogger.Warnln("err: filter get messages ", err)
 
@@ -111,7 +118,7 @@ func (self *Filter) Find() []*ethstate.Message {
 			messages = append(messages, self.FilterMessages(msgs)...)
 		}
 
-		block = self.eth.BlockChain().GetBlock(block.PrevHash)
+		block = self.bc.GetBlock(block.PrevHash)
 	}
 
 	skip := int(math.Min(float64(len(messages)), float64(self.skip)))
@@ -172,7 +179,7 @@ func (self *Filter) FilterMessages(msgs []*ethstate.Message) []*ethstate.Message
 
 func (self *Filter) bloomFilter(block *Block) bool {
 	fk := append([]byte("bloom"), block.Hash()...)
-	bin, err := self.eth.Db().Get(fk)
+	bin, err := self.db.Get(fk)
 	if err != nil {
 		fmt.Println(err)
 	}
