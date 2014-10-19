@@ -53,10 +53,10 @@ type EthProtocol struct {
 
 	ethereum *Ethereum
 
-	td               *big.Int
-	bestHash         []byte
-	lastReceivedHash []byte
-	requestedHashes  [][]byte
+	td       *big.Int
+	bestHash []byte
+	// lastReceivedHash []byte
+	// requestedHashes  [][]byte
 
 	lastBlockReceived  time.Time
 	blocksRequested    int
@@ -150,7 +150,7 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 			out, _ := p2p.NewMsg(BlockHashesMsg, ethutil.ByteSliceToInterface(hashes)...)
 			response <- out
 		case BlockHashesMsg:
-			self.Sync(true)
+			self.Sync(true) // ? what for after all?
 
 			blockPool := self.ethereum.blockPool
 			foundCommonHash := false
@@ -167,7 +167,8 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 			}
 
 			if !foundCommonHash {
-				self.FetchHashes(response)
+				// fetching more hashes but o need to check TD with blockpool
+				self.FetchHashes(response, lastReceivedHash)
 			} else {
 				logger.Infof("Found common hash (%x...)\n", self.lastReceivedHash[0:4])
 				self.HashSync(false)
@@ -189,12 +190,12 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 			response <- out
 
 		case BlocksMsg:
-			self.Sync(true)
+			self.Sync(true) // what for?
 
 			it := data.NewIterator()
 			for it.Next() {
 				block := ethchain.NewBlockFromRlpValue(it.Value())
-				blockPool.Add(block, p)
+				blockPool.AddBlock(block, self.peer)
 			}
 			self.lastBlockReceived = time.Now()
 		case NewBlockMsg:
@@ -204,8 +205,10 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 				td        = data.Get(1).BigInt()
 			)
 
-			if td.Cmp(blockPool.td) > 0 {
-				blockPool.AddNew(block, p)
+			// this should reset td and offer blockpool as candidate new peer?
+			if blockPool.AddNewBlock(td, block, self.peer) {
+				out, _ := p2p.NewMsg(GetBlockHashesMsg, block.Hash(), uint32(256))
+				response <- out
 			}
 
 		default:
@@ -217,7 +220,8 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 func (self *EthProtocol) Sync(sync bool) {
 	self.synclock.Lock()
 	defer self.synclock.Lock()
-	if self.syncGroup != nil {
+	if self.syncGroup == nil {
+
 		if sync {
 			self.syncGroup = self.ethereum.BlockPool().Sync()
 		}
@@ -232,7 +236,7 @@ func (self *EthProtocol) Sync(sync bool) {
 func (self *EthProtocol) HashSync(sync bool) {
 	self.hashSyncLock.Lock()
 	defer self.hashSyncLock.Lock()
-	if self.hashSyncGroup != nil {
+	if self.hashSyncGroup == nil {
 		if sync {
 			self.hashSyncGroup = self.ethereum.BlockPool().HashSync()
 		}
@@ -282,7 +286,7 @@ func (self *EthProtocol) handleStatus(msg *p2p.Msg, response chan *p2p.Msg) {
 	}
 
 	if networkId != NetworkId {
-		self.peerError(InvalidNetworkId, "%d (!=%d)", networkId, NetworkId)
+		self.peerError(p2p.InvalidNetworkId, "%d (!=%d)", networkId, NetworkId)
 		return
 	}
 
@@ -293,25 +297,26 @@ func (self *EthProtocol) handleStatus(msg *p2p.Msg, response chan *p2p.Msg) {
 
 	self.td = td
 	self.bestHash = bestHash
-	self.lastReceivedHash = bestHash
 
 	self.state = statusReceived
 
-	self.FetchHashes(response)
+	if self.ethereum.BlockPool().AddPeer(self.td, self.peer) {
+		// peer.HashSync(false)?
+	}
+	// this should only be called if this is higher difficulty no?
+	self.FetchHashes(response, bestHash)
 
 	ethlogger.Infof("Peer is [eth] capable (%d/%d). TD = %v ~ %x", protocolVersion, networkId, self.td, self.bestHash)
 
 }
 
-func (self *EthProtocol) FetchHashes(response chan *p2p.Msg) {
-	if self.ethereum.BlockPool().HighestTD(self.td, self.peer) {
-		// peer.HashSync(false)
-	}
+func (self *EthProtocol) FetchHashes(response chan *p2p.Msg, lastReceivedHash []byte) {
+
 	if !self.ethereum.BlockPool().HasLatestHash() {
 		self.HashSync(true)
 		const amount = 256
-		ethlogger.Debugf("Fetching hashes (%d) %x...\n", amount, self.lastReceivedHash[0:4])
-		msg, _ := p2p.NewMsg(p2p.GetBlockHashesMsg, []interface{}{self.lastReceivedHash, uint32(amount)})
+		ethlogger.Debugf("Fetching hashes (%d) %x...\n", amount, lastReceivedHash[0:4])
+		msg, _ := p2p.NewMsg(p2p.GetBlockHashesMsg, lastReceivedHash, uint32(amount))
 		response <- msg
 	}
 }
