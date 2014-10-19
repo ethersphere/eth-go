@@ -12,7 +12,7 @@ import (
 var chainlogger = ethlog.NewLogger("CHAIN")
 
 type BlockChain struct {
-	Ethereum EthManager
+	db ethutil.Database
 	// The famous, the fabulous Mister GENESIIIIIIS (block)
 	genesisBlock *Block
 	// Last known total difficulty
@@ -24,10 +24,9 @@ type BlockChain struct {
 	LastBlockHash []byte
 }
 
-func NewBlockChain(ethereum EthManager) *BlockChain {
-	bc := &BlockChain{}
+func NewBlockChain(db ethutil.Database) *BlockChain {
+	bc := &BlockChain{db: db}
 	bc.genesisBlock = NewBlockFromBytes(ethutil.Encode(Genesis))
-	bc.Ethereum = ethereum
 
 	bc.setLastBlock()
 
@@ -88,7 +87,7 @@ func (bc *BlockChain) Reset() {
 	// Prepare the genesis block
 	bc.Add(bc.genesisBlock)
 	fk := append([]byte("bloom"), bc.genesisBlock.Hash()...)
-	bc.Ethereum.Db().Put(fk, make([]byte, 255))
+	bc.db.Put(fk, make([]byte, 255))
 	bc.CurrentBlock = bc.genesisBlock
 
 	bc.SetTotalDifficulty(ethutil.Big("0"))
@@ -98,7 +97,7 @@ func (bc *BlockChain) Reset() {
 }
 
 func (bc *BlockChain) HasBlock(hash []byte) bool {
-	data, _ := ethutil.Config.Db.Get(hash)
+	data, _ := bc.db.Get(hash)
 	return len(data) != 0
 }
 
