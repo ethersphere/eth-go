@@ -17,12 +17,10 @@ import (
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethlog"
-	"github.com/ethereum/eth-go/ethreact"
 	"github.com/ethereum/eth-go/ethrpc"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
-	"github.com/ethereum/eth-go/ethwire"
-	"github.com/ethereum/eth-go/eventer"
+	"github.com/ethereum/eth-go/event"
 	"github.com/ethereum/eth-go/p2p"
 )
 
@@ -44,8 +42,8 @@ type Ethereum struct {
 	blockChain *ethchain.BlockChain
 	// The block pool
 	blockPool *BlockPool
-	// Eventer
-	eventer *eventer.EventMachine
+	// Event
+	eventMux *event.TypeMux
 
 	// Nonce
 	Nonce uint64
@@ -63,8 +61,6 @@ type Ethereum struct {
 	Mining bool
 
 	listening bool
-
-	reactor *ethreact.ReactorEngine
 
 	RpcServer *ethrpc.JsonRpcServer
 
@@ -100,10 +96,13 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	peersFile := path.Join(ethutil.Config.ExecPath, "known_peers.json")
 
 	nonce, _ := ethutil.RandomUint64()
+
+	eventMux := event.NewTypeMux()
 	ethereum := &Ethereum{
 		shutdownChan: make(chan bool),
 		quit:         make(chan bool),
 		db:           db,
+		eventMux:     eventMux,
 		Nonce:        nonce,
 		// serverCaps:     caps,
 		server:         server,
@@ -113,12 +112,10 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 		blacklist:      blacklist,
 		filters:        make(map[int]*ethchain.Filter),
 	}
-	ethereum.reactor = ethreact.New()
-	ethereum.eventer = eventer.New()
 
-	ethereum.blockPool = NewBlockPool(ethereum)
 	ethereum.txPool = ethchain.NewTxPool(ethereum)
 	ethereum.blockChain = ethchain.NewBlockChain(ethereum)
+	ethereum.blockPool = NewBlockPool(eventMux, ethereum.blockChain)
 	ethereum.stateManager = ethchain.NewStateManager(ethereum)
 
 	// tart the tx pool
@@ -127,8 +124,8 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	return ethereum, nil
 }
 
-func (s *Ethereum) Reactor() *ethreact.ReactorEngine {
-	return s.reactor
+func (s *Ethereum) EventMux() *event.TypeMux {
+	return s.eventMux
 }
 
 func (s *Ethereum) KeyManager() *ethcrypto.KeyManager {
@@ -155,17 +152,13 @@ func (s *Ethereum) BlockPool() *BlockPool {
 	return s.blockPool
 }
 
-func (s *Ethereum) Eventer() *eventer.EventMachine {
-	return s.eventer
-}
-
 func (self *Ethereum) Db() ethutil.Database {
 	return self.db
 }
 
-func (s *Ethereum) ServerCaps() Caps {
-	return s.serverCaps
-}
+// func (s *Ethereum) ServerCaps() Caps {
+// 	return s.serverCaps
+// }
 
 func (s *Ethereum) IsMining() bool {
 	return s.Mining
@@ -173,7 +166,6 @@ func (s *Ethereum) IsMining() bool {
 
 // Start the ethereum
 func (s *Ethereum) Start(seed bool) {
-	s.reactor.Start()
 	s.blockPool.Start()
 	s.stateManager.Start()
 
@@ -197,8 +189,7 @@ func (s *Ethereum) Stop() {
 	}
 	s.txPool.Stop()
 	s.stateManager.Stop()
-	s.reactor.Flush()
-	s.reactor.Stop()
+	s.eventMux.Stop()
 	s.blockPool.Stop()
 
 	ethlogger.Infoln("Server stopped")

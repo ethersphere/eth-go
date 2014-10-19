@@ -11,8 +11,8 @@ import (
 
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethlog"
-	"github.com/ethereum/eth-go/ethp2p"
 	"github.com/ethereum/eth-go/ethutil"
+	"github.com/ethereum/eth-go/p2p"
 )
 
 var poollogger = ethlog.NewLogger("BPOOL")
@@ -28,7 +28,8 @@ type block struct {
 type BlockPool struct {
 	mut sync.Mutex
 
-	eth *Ethereum
+	eventMux   *event.TypeMux
+	blockChain *ethchain.BlockChain
 
 	hashes [][]byte
 	pool   map[string]*block
@@ -44,12 +45,13 @@ type BlockPool struct {
 	peer *Peer
 }
 
-func NewBlockPool(eth *Ethereum) *BlockPool {
+func NewBlockPool(eventMux *event.TypeMux, blockChain *ethchain.BlockChain) *BlockPool {
 	return &BlockPool{
-		eth:  eth,
-		pool: make(map[string]*block),
-		td:   ethutil.Big0,
-		quit: make(chan bool),
+		eventMux:   eventMux,
+		blockChain: blockChain,
+		pool:       make(map[string]*block),
+		td:         ethutil.Big0,
+		quit:       make(chan bool),
 	}
 }
 
@@ -65,12 +67,11 @@ func (self *BlockPool) Reset() {
 func (self *BlockPool) HasLatestHash() bool {
 	self.mut.Lock()
 	defer self.mut.Unlock()
-
-	return self.pool[string(self.eth.BlockChain().CurrentBlock.Hash())] != nil
+	return self.pool[string(self.blockChain.CurrentBlock.Hash())] != nil
 }
 
 func (self *BlockPool) HasCommonHash(hash []byte) bool {
-	return self.eth.BlockChain().GetBlock(hash) != nil
+	return self.blockChain.GetBlock(hash) != nil
 }
 
 func (self *BlockPool) Blocks() (blocks ethchain.Blocks) {
@@ -83,7 +84,13 @@ func (self *BlockPool) Blocks() (blocks ethchain.Blocks) {
 	return
 }
 
-func (self *BlockPool) HighestTD(td *big.Int, peer *Peer) (newpeer bool) {
+func (self *BlockPool) TD() *big.Int {
+	self.tdlock.Lock()
+	defer self.tdlock.Unlock()
+	return self.td
+}
+
+func (self *BlockPool) AddPeer(td *big.Int, peer *Peer) {
 	self.tdlock.Lock()
 	defer self.tdlock.Unlock()
 	if self.peer == nil && td.Cmp(self.td) >= 0 {
@@ -93,6 +100,7 @@ func (self *BlockPool) HighestTD(td *big.Int, peer *Peer) (newpeer bool) {
 		poollogger.Debugf("Found suitable peer (%v)\n", td)
 	}
 	if self.peer != nil && td.Cmp(self.td) > 0 {
+		// self.peer.HashSync(false)
 		self.peer = peer
 		self.td = td
 		newpeer = true
@@ -112,41 +120,38 @@ func (self *BlockPool) AddHash(hash []byte, peer *Peer) {
 	}
 }
 
-func (self *BlockPool) Add(b *ethchain.Block, peer *Peer) {
-	self.addBlock(b, peer, false)
+func (self *BlockPool) AddNewBlock(td *big.Int, b *ethchain.Block, peer *Peer) (fetchHashes bool) {
+	self.tdlock.Lock()
+	defer self.tdlock.Unlock()
+	if td.Cmp(self.td) > 0 {
+		fetchHashes = self.AddBlock(b, peer)
+	}
+	return
 }
 
-func (self *BlockPool) AddNew(b *ethchain.Block, peer *Peer) {
-	self.addBlock(b, peer, true)
-}
-
-func (self *BlockPool) addBlock(b *ethchain.Block, peer *Peer, newBlock bool) {
+func (self *BlockPool) AddBlock(b *ethchain.Block, peer *Peer) (fetchHashes bool) {
 	self.mut.Lock()
 	defer self.mut.Unlock()
 
 	hash := string(b.Hash())
 
-	if self.pool[hash] == nil && !self.eth.BlockChain().HasBlock(b.Hash()) {
-		poollogger.Infof("Got unrequested block (%x...)\n", hash[0:4])
+	requested := self.pool[hash] != nil
 
-		self.hashes = append(self.hashes, b.Hash())
-		self.pool[hash] = &block{peer, peer, b, time.Now(), 0}
-
-		// The following is only performed on an unrequested new block
-		if newBlock {
-			fmt.Println("1.", !self.eth.BlockChain().HasBlock(b.PrevHash), ethutil.Bytes2Hex(b.Hash()[0:4]), ethutil.Bytes2Hex(b.PrevHash[0:4]))
-			fmt.Println("2.", self.pool[string(b.PrevHash)] == nil)
-			fmt.Println("3.", !self.fetchingHashes)
-			if !self.eth.BlockChain().HasBlock(b.PrevHash) && self.pool[string(b.PrevHash)] == nil && !self.fetchingHashes {
+	if requested {
+		self.pool[hash].block = b
+	} else {
+		if known := self.blockChain.HasBlock(b.Hash()); !known {
+			poollogger.Infof("Got unrequested block (%x...)\n", hash[0:4])
+			self.hashes = append(self.hashes, b.Hash())
+			self.pool[hash] = &block{peer, peer, b, time.Now(), 0}
+			if !self.blockChain.HasBlock(b.PrevHash) && self.pool[string(b.PrevHash)] == nil && !self.fetchingHashes {
 				poollogger.Infof("Unknown chain, requesting (%x...)\n", b.PrevHash[0:4])
-				peer.QueueMessage(ethwire.NewMessage(ethwire.MsgGetBlockHashesTy, []interface{}{b.Hash(), uint32(256)}))
+				fetchHashes = true
 			}
 		}
-	} else if self.pool[hash] != nil {
-		self.pool[hash].block = b
 	}
-
 	self.BlocksProcessed++
+	return
 }
 
 func (self *BlockPool) Remove(hash []byte) {
@@ -222,7 +227,7 @@ func (self *BlockPool) Stop() {
 	close(self.quit)
 }
 
-func (self *BlockPool) FetchHashes() sync.WaitGroup {
+func (self *BlockPool) HashSync() sync.WaitGroup {
 	self.fetchHashLock.Lock()
 	defer self.fetchHashLock.Unlock()
 	if self.fetchHashGroup == nil {
@@ -245,16 +250,27 @@ func (self *BlockPool) FetchHashes() sync.WaitGroup {
 	return *self.fetchHashGroup
 }
 
+func (self *BlockPool) HashSyncing() (syncing bool) {
+	self.fetchHashLock.Lock()
+	defer self.fetchHashLock.Unlock()
+	if self.fetchHashGroup != nil {
+		syncing = true
+	}
+	return
+}
+
 func (self *BlockPool) ChainSync() sync.WaitGroup {
 	self.synclock.Lock()
 	defer self.synclock.Unlock()
 	if self.syncGroup == nil {
 		self.syncGroup = &sync.WaitGroup{}
 		self.syncGroup.Add(1)
-		self.eth.reactor.Post("chainSync", true)
+		self.eventMux.Post(ChainSyncEvent{true})
 		go func() {
 			self.syncGroup.Wait()
-			self.eth.reactor.Post("chainSync", false)
+			self.synclock.Lock()
+			defer self.synclock.Unlock()
+			self.eth.eventMux.Post(ChainSyncEvent{false})
 			self.syncGroup = nil
 		}()
 	} else {
@@ -276,14 +292,14 @@ out:
 
 			// Find common block
 			for i, block := range blocks {
-				if self.eth.BlockChain().HasBlock(block.PrevHash) {
+				if self.blockChain.HasBlock(block.PrevHash) {
 					blocks = blocks[i:]
 					break
 				}
 			}
 
 			if len(blocks) > 0 {
-				if self.eth.BlockChain().HasBlock(blocks[0].PrevHash) {
+				if self.blockChain.HasBlock(blocks[0].PrevHash) {
 					for i, block := range blocks[1:] {
 						// NOTE: The Ith element in this loop refers to the previous block in
 						// outer "blocks"
