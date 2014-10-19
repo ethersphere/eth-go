@@ -1,9 +1,8 @@
 package ethpipe
 
 import (
-	"container/list"
-
 	"github.com/ethereum/eth-go/ethstate"
+	"github.com/ethereum/eth-go/p2p"
 )
 
 type World struct {
@@ -23,7 +22,7 @@ func (self *Pipe) World() *World {
 }
 
 func (self *World) State() *ethstate.State {
-	return self.pipe.stateManager.CurrentState()
+	return self.pipe.obj.StateManager().CurrentState()
 }
 
 func (self *World) Get(addr []byte) *Object {
@@ -55,7 +54,7 @@ func (self *World) IsListening() bool {
 	return self.pipe.obj.IsListening()
 }
 
-func (self *World) Peers() *list.List {
+func (self *World) Peers() []*p2p.Peer {
 	return self.pipe.obj.Peers()
 }
 

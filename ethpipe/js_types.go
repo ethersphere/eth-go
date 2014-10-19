@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
+	"github.com/ethereum/eth-go/p2p"
 )
 
 // Block interface exposed to QML
@@ -143,7 +144,7 @@ func NewPReciept(contractCreation bool, creationAddress, hash, address []byte) *
 // Peer interface exposed to QML
 
 type JSPeer struct {
-	ref          *ethchain.Peer
+	ref          *p2p.Peer
 	Inbound      bool   `json:"isInbound"`
 	LastSend     int64  `json:"lastSend"`
 	LastPong     int64  `json:"lastPong"`
@@ -155,24 +156,18 @@ type JSPeer struct {
 	Caps         string `json:"caps"`
 }
 
-func NewJSPeer(peer ethchain.Peer) *JSPeer {
+func NewJSPeer(peer *p2p.Peer) *JSPeer {
 	if peer == nil {
 		return nil
 	}
 
 	var ip []string
-	for _, i := range peer.Host() {
+	for _, i := range peer.Host {
 		ip = append(ip, strconv.Itoa(int(i)))
 	}
 	ipAddress := strings.Join(ip, ".")
 
-	var caps []string
-	capsIt := peer.Caps().NewIterator()
-	for capsIt.Next() {
-		caps = append(caps, capsIt.Value().Str())
-	}
-
-	return &JSPeer{ref: &peer, Inbound: peer.Inbound(), LastSend: peer.LastSend().Unix(), LastPong: peer.LastPong(), Version: peer.Version(), Ip: ipAddress, Port: int(peer.Port()), Latency: peer.PingTime(), Caps: fmt.Sprintf("%v", caps)}
+	return &JSPeer{ref: peer, Inbound: peer.Inbound, LastSend: 0, LastPong: 0, Version: peer.Id, Ip: ipAddress, Port: int(peer.Port), Latency: "", Caps: fmt.Sprintf("%v", peer.Caps)}
 }
 
 type JSReceipt struct {

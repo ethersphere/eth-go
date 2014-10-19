@@ -2,14 +2,12 @@ package ethchain
 
 import (
 	"bytes"
-	// "container/list"
 	"fmt"
 	"math/big"
 	"os"
 	"sync"
-	// "time"
 
-	// "github.com/ethereum/eth-go/ethcrypto"
+	"github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethlog"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
@@ -19,18 +17,25 @@ import (
 
 var statelogger = ethlog.NewLogger("STATE")
 
-type Broadcaster interface {
-	Broadcast(string, *p2p.Msg)
+type EthManager interface {
+	StateManager() *StateManager
+	BlockChain() *BlockChain
+	TxPool() *TxPool
+	KeyManager() *ethcrypto.KeyManager
+	PeerCount() int
+	Peers() []*p2p.Peer
+	Broadcast(*p2p.Msg)
+	IsMining() bool
+	IsListening() bool
+	ClientIdentity() p2p.ClientIdentity
+	Db() ethutil.Database
+	EventMux() *event.TypeMux
 }
 
 type StateManager struct {
 	// Mutex for locking the block processor. Blocks can only be handled one at a time
 	mutex sync.Mutex
-	// Canonical block chain
-	bc       *BlockChain
-	db       ethutil.Database
-	txPool   *TxPool
-	eventMux *event.TypeMux
+	eth   EthManager
 	// non-persistent key/value memory storage
 	mem map[string]*big.Int
 	// Proof of work used for validating
@@ -52,24 +57,20 @@ type StateManager struct {
 	events event.Subscription
 }
 
-func NewStateManager(eventMux *event.TypeMux, blockChain *BlockChain, txPool *TxPool, db ethutil.Database) *StateManager {
+func NewStateManager(eth EthManager) *StateManager {
 	sm := &StateManager{
-		mem:      make(map[string]*big.Int),
-		Pow:      &EasyPow{},
-		eventMux: eventMux,
-		bc:       blockChain,
-		txPool:   txPool,
-		db:       db,
+		mem: make(map[string]*big.Int),
+		Pow: &EasyPow{},
+		eth: eth,
 	}
-	sm.transState = ethereum.BlockChain().CurrentBlock.State().Copy()
-	sm.miningState = ethereum.BlockChain().CurrentBlock.State().Copy()
-
 	return sm
 }
 
 func (self *StateManager) Start() {
 	statelogger.Debugln("Starting state manager")
-	self.events = self.eventMux.Subscribe(Blocks(nil))
+	self.transState = self.eth.BlockChain().CurrentBlock.State().Copy()
+	self.miningState = self.eth.BlockChain().CurrentBlock.State().Copy()
+	self.events = self.eth.EventMux().Subscribe(Blocks(nil))
 	go self.updateThread()
 }
 
@@ -92,26 +93,26 @@ func (self *StateManager) updateThread() {
 	}
 }
 
-func (sm *StateManager) CurrentState() *ethstate.State {
-	return sm.bc.CurrentBlock.State()
+func (self *StateManager) CurrentState() *ethstate.State {
+	return self.eth.BlockChain().CurrentBlock.State()
 }
 
-func (sm *StateManager) TransState() *ethstate.State {
-	return sm.transState
+func (self *StateManager) TransState() *ethstate.State {
+	return self.transState
 }
 
-func (sm *StateManager) MiningState() *ethstate.State {
-	return sm.miningState
+func (self *StateManager) MiningState() *ethstate.State {
+	return self.miningState
 }
 
-func (sm *StateManager) NewMiningState() *ethstate.State {
-	sm.miningState = sm.bc.CurrentBlock.State().Copy()
+func (self *StateManager) NewMiningState() *ethstate.State {
+	self.miningState = self.eth.BlockChain().CurrentBlock.State().Copy()
 
-	return sm.miningState
+	return self.miningState
 }
 
-func (sm *StateManager) BlockChain() *BlockChain {
-	return sm.bc
+func (self *StateManager) BlockChain() *BlockChain {
+	return self.eth.BlockChain()
 }
 
 func (self *StateManager) ProcessTransactions(coinbase *ethstate.StateObject, state *ethstate.State, block, parent *Block, txs Transactions) (Receipts, Transactions, Transactions, error) {
@@ -167,7 +168,7 @@ done:
 		}
 
 		// Notify all subscribers
-		self.eventMux.Post(TxEvent{TxPost, tx})
+		self.eth.EventMux().Post(TxEvent{TxPost, tx})
 
 		receipts = append(receipts, receipt)
 		handled = append(handled, tx)
@@ -182,23 +183,23 @@ done:
 	return receipts, handled, unhandled, err
 }
 
-func (sm *StateManager) Process(block *Block, dontReact bool) (err error) {
+func (self *StateManager) Process(block *Block, dontReact bool) (err error) {
 	// Processing a blocks may never happen simultaneously
-	sm.mutex.Lock()
-	defer sm.mutex.Unlock()
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
 
-	if sm.bc.HasBlock(block.Hash()) {
+	if self.eth.BlockChain().HasBlock(block.Hash()) {
 		return nil
 	}
 
-	if !sm.bc.HasBlock(block.PrevHash) {
+	if !self.eth.BlockChain().HasBlock(block.PrevHash) {
 		return ParentError(block.PrevHash)
 	}
 
-	sm.lastAttemptedBlock = block
+	self.lastAttemptedBlock = block
 
 	var (
-		parent = sm.bc.GetBlock(block.PrevHash)
+		parent = self.eth.BlockChain().GetBlock(block.PrevHash)
 		state  = parent.State()
 	)
 
@@ -212,7 +213,7 @@ func (sm *StateManager) Process(block *Block, dontReact bool) (err error) {
 		fmt.Printf("## %x %x ##\n", block.Hash(), block.Number)
 	}
 
-	receipts, err := sm.ApplyDiff(state, parent, block)
+	receipts, err := self.ApplyDiff(state, parent, block)
 	if err != nil {
 		return err
 	}
@@ -223,12 +224,12 @@ func (sm *StateManager) Process(block *Block, dontReact bool) (err error) {
 	}
 
 	// Block validation
-	if err = sm.ValidateBlock(block); err != nil {
+	if err = self.ValidateBlock(block); err != nil {
 		statelogger.Errorln("Error validating block:", err)
 		return err
 	}
 
-	if err = sm.AccumelateRewards(state, block, parent); err != nil {
+	if err = self.AccumelateRewards(state, block, parent); err != nil {
 		statelogger.Errorln("Error accumulating reward", err)
 		return err
 	}
@@ -241,29 +242,29 @@ func (sm *StateManager) Process(block *Block, dontReact bool) (err error) {
 	}
 
 	// Calculate the new total difficulty and sync back to the db
-	if sm.CalculateTD(block) {
+	if self.CalculateTD(block) {
 		// Sync the current block's state to the database and cancelling out the deferred Undo
 		state.Sync()
 
 		// Add the block to the chain
-		sm.bc.Add(block)
+		self.eth.BlockChain().Add(block)
 
-		sm.transState = state.Copy()
+		self.transState = state.Copy()
 
 		// Create a bloom bin for this block
-		filter := sm.createBloomFilter(state)
+		filter := self.createBloomFilter(state)
 		// Persist the data
 		fk := append([]byte("bloom"), block.Hash()...)
-		sm.db.Put(fk, filter.Bin())
+		self.eth.Db().Put(fk, filter.Bin())
 
 		statelogger.Infof("Imported block #%d (%x...)\n", block.Number, block.Hash()[0:4])
 		if dontReact == false {
-			sm.eventMux.Post(NewBlockEvent{block})
+			self.eth.EventMux().Post(NewBlockEvent{block})
 
 			state.Manifest().Reset()
 		}
 
-		sm.txPool().RemoveInvalid(state)
+		self.eth.TxPool().RemoveInvalid(state)
 	} else {
 		statelogger.Errorln("total diff failed")
 	}
@@ -292,14 +293,14 @@ func (sm *StateManager) CalculateTD(block *Block) bool {
 
 	// TD(genesis_block) = 0 and TD(B) = TD(B.parent) + sum(u.difficulty for u in B.uncles) + B.difficulty
 	td := new(big.Int)
-	td = td.Add(sm.bc.TD, uncleDiff)
+	td = td.Add(sm.eth.BlockChain().TD, uncleDiff)
 	td = td.Add(td, block.Difficulty)
 
 	// The new TD will only be accepted if the new difficulty is
 	// is greater than the previous.
-	if td.Cmp(sm.bc.TD) > 0 {
+	if td.Cmp(sm.eth.BlockChain().TD) > 0 {
 		// Set the new total difficulty back to the block chain
-		sm.bc.SetTotalDifficulty(td)
+		sm.eth.BlockChain().SetTotalDifficulty(td)
 
 		return true
 	}
@@ -313,7 +314,7 @@ func (sm *StateManager) CalculateTD(block *Block) bool {
 func (sm *StateManager) ValidateBlock(block *Block) error {
 	// Check each uncle's previous hash. In order for it to be valid
 	// is if it has the same block hash as the current
-	parent := sm.bc.GetBlock(block.PrevHash)
+	parent := sm.eth.BlockChain().GetBlock(block.PrevHash)
 	/*
 		for _, uncle := range block.Uncles {
 			if bytes.Compare(uncle.PrevHash,parent.PrevHash) != 0 {
@@ -329,7 +330,7 @@ func (sm *StateManager) ValidateBlock(block *Block) error {
 
 	diff := block.Time - parent.Time
 	if diff < 0 {
-		return ValidationError("Block timestamp less then prev block %v (%v - %v)", diff, block.Time, sm.bc.CurrentBlock.Time)
+		return ValidationError("Block timestamp less then prev block %v (%v - %v)", diff, block.Time, sm.eth.BlockChain().CurrentBlock.Time)
 	}
 
 	/* XXX
@@ -358,7 +359,7 @@ func (sm *StateManager) AccumelateRewards(state *ethstate.State, block, parent *
 			return UncleError("Uncle not unique")
 		}
 
-		uncleParent := sm.bc.GetBlock(uncle.PrevHash)
+		uncleParent := sm.eth.BlockChain().GetBlock(uncle.PrevHash)
 		if uncleParent == nil {
 			return UncleError("Uncle's parent unknown")
 		}
@@ -399,20 +400,20 @@ func (sm *StateManager) createBloomFilter(state *ethstate.State) *BloomFilter {
 		bloomf.Set(msg.From)
 	}
 
-	sm.eventMux.Post(state.Manifest().Messages)
+	sm.eth.EventMux().Post(state.Manifest().Messages)
 
 	return bloomf
 }
 
 func (sm *StateManager) GetMessages(block *Block) (messages []*ethstate.Message, err error) {
-	if !sm.bc.HasBlock(block.PrevHash) {
+	if !sm.eth.BlockChain().HasBlock(block.PrevHash) {
 		return nil, ParentError(block.PrevHash)
 	}
 
 	sm.lastAttemptedBlock = block
 
 	var (
-		parent = sm.bc.GetBlock(block.PrevHash)
+		parent = sm.eth.BlockChain().GetBlock(block.PrevHash)
 		state  = parent.State().Copy()
 	)
 

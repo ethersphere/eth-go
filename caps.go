@@ -1,5 +1,9 @@
 package eth
 
+import (
+	"strings"
+)
+
 type Caps byte
 
 const (

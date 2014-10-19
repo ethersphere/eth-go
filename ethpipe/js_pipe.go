@@ -3,7 +3,6 @@ package ethpipe
 import (
 	"bytes"
 	"encoding/json"
-	"sync/atomic"
 
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethcrypto"
@@ -62,14 +61,9 @@ func (self *JSPipe) PeerCount() int {
 
 func (self *JSPipe) Peers() []JSPeer {
 	var peers []JSPeer
-	for peer := self.obj.Peers().Front(); peer != nil; peer = peer.Next() {
-		p := peer.Value.(ethchain.Peer)
-		// we only want connected peers
-		if atomic.LoadInt32(p.Connected()) != 0 {
-			peers = append(peers, *NewJSPeer(p))
-		}
+	for _, peer := range self.obj.Peers() {
+		peers = append(peers, *NewJSPeer(peer))
 	}
-
 	return peers
 }
 

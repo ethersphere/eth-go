@@ -1,9 +1,11 @@
 package eth
 
 import (
+	"encoding/json"
 	"net"
 
 	"github.com/ethereum/eth-go/ethutil"
+	"github.com/ethereum/eth-go/p2p"
 )
 
 const (
@@ -20,7 +22,7 @@ func WritePeers(path string, addresses []string) {
 }
 
 func ReadPeers(path string) (ips []string, err error) {
-	var data []byte
+	var data string
 	data, err = ethutil.ReadAllFile(path)
 	if err != nil {
 		json.Unmarshal([]byte(data), &ips)
@@ -31,19 +33,21 @@ func ReadPeers(path string) (ips []string, err error) {
 func Seed(path string, bootstrap bool, peerCallback func(net.Addr)) {
 	var addr net.Addr
 	i := 0
-	ethlogger.Infoln("seeding peers")
+	logger.Infoln("seeding peers")
+	network := p2p.NewTCPNetwork(p2p.NONE)
+
 	if len(path) > 0 {
 		ips, err := ReadPeers(path)
 		if err != nil && len(ips) > 0 {
-			ethlogger.Debugln("known peers")
+			logger.Debugln("known peers")
 			for _, ip := range ips {
-				addr, err = network.ParseAddress(ip)
+				addr, err = network.ParseAddr(ip)
 				if err == nil {
 					i++
-					ethlogger.Debugln("known peer ", ip)
+					logger.Debugln("known peer ", ip)
 					peerCallback(addr)
 				} else {
-					ethlogger.Debugln("couldn't parse %v: %v", ip, err)
+					logger.Debugln("couldn't parse %v: %v", ip, err)
 				}
 			}
 		}
@@ -52,45 +56,45 @@ func Seed(path string, bootstrap bool, peerCallback func(net.Addr)) {
 		return
 	}
 	// Eth-Go Bootstrapping
-	ips, err = net.LookupIP(goSeedNodeAddress)
+	ips, err := net.LookupIP(goSeedNodeAddress)
 	if err == nil {
-		ethlogger.Debugln("eth go seed node ", goSeedNodeAddress)
+		logger.Debugln("eth go seed node ", goSeedNodeAddress)
 		for _, ip := range ips {
-			addr, err = network.NewAddr(ip, 30303)
+			addr, err = network.NewAddr(ip.String(), 30303)
 			if err == nil {
-				ethlogger.Debugf("DNS Go peer: %v:30303", ip)
+				logger.Debugf("DNS Go peer: %v:30303", ip)
 				peerCallback(addr)
 			} else {
-				ethlogger.Debugln("couldn't resolve %v: %v", ip, err)
+				logger.Debugln("couldn't resolve %v: %v", ip, err)
 			}
 		}
 	} else {
-		ethlogger.Debugln("couldn't resolve %v: %v", ip, err)
+		logger.Debugln("couldn't resolve %v: %v", goSeedNodeAddress, err)
 	}
 
 	// Official DNS Bootstrapping
-	var nodes *net.SRV
+	var nodes []*net.SRV
 	_, nodes, err = net.LookupSRV("eth", "tcp", "ethereum.org")
 	if err == nil {
-		ethlogger.Debugln("eth SRV seed node ethereum.org")
+		logger.Debugln("eth SRV seed node ethereum.org")
 		for _, node := range nodes {
 			addr, err = network.NewAddr(node.Target, int(node.Port))
 			if err == nil {
-				ethlogger.Debugln("DNS eth Peer:", addr)
+				logger.Debugln("DNS eth Peer:", addr)
 				peerCallback(addr)
 			} else {
-				ethlogger.Debugln("couldn't resolve %v: %v", node.Target, err)
+				logger.Debugln("couldn't resolve %v: %v", node.Target, err)
 			}
 		}
 	} else {
-		ethlogger.Debugln("couldn't look up eth srv: %v", err)
+		logger.Debugln("couldn't look up eth srv: %v", err)
 	}
 
-	addr, err = network.ParseAddress(seedNodeAddress)
+	addr, err = network.ParseAddr(seedNodeAddress)
 	if err == nil {
-		ethlogger.Debugln("eth seed node ", seedNodeAddress)
+		logger.Debugln("eth seed node ", seedNodeAddress)
 		peerCallback(addr)
 	} else {
-		ethlogger.Debugln("couldn't parse %v: %v", seedNodeAddress, err)
+		logger.Debugln("couldn't parse %v: %v", seedNodeAddress, err)
 	}
 }

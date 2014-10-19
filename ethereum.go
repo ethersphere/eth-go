@@ -1,18 +1,9 @@
 package eth
 
 import (
-	"container/list"
-	"encoding/json"
-	"fmt"
-	"math/big"
-	"math/rand"
 	"net"
 	"path"
-	"strconv"
-	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethcrypto"
@@ -53,6 +44,7 @@ type Ethereum struct {
 
 	blacklist p2p.Blacklist
 	server    *p2p.Server
+	txSub     event.Subscription
 
 	// Capabilities for outgoing peers
 	// serverCaps Caps
@@ -66,7 +58,7 @@ type Ethereum struct {
 
 	keyManager *ethcrypto.KeyManager
 
-	clientIdentity ethwire.ClientIdentity
+	clientIdentity p2p.ClientIdentity
 
 	synclock  sync.Mutex
 	syncGroup sync.WaitGroup
@@ -77,51 +69,68 @@ type Ethereum struct {
 }
 
 func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto.KeyManager, maxPeers int, caps Caps, usePnp bool) (*Ethereum, error) {
-	var err error
 
 	saveProtocolVersion(db)
 	ethutil.Config.Db = db
 
 	// FIXME:
-	blacklist := p2p.BlacklistMap{}
+	blacklist := &p2p.BlacklistMap{}
 	// Sorry Py person. I must blacklist. you perform badly
-	s.blacklist.Put(ethutil.Hex2Bytes("64656330303561383532336435376331616537643864663236623336313863373537353163636634333530626263396330346237336262623931383064393031"))
+	blacklist.Put(ethutil.Hex2Bytes("64656330303561383532336435376331616537643864663236623336313863373537353163636634333530626263396330346237336262623931383064393031"))
 
 	var natType p2p.NATType
 
 	network := p2p.NewTCPNetwork(natType)
 	handlers := make(p2p.Handlers)
+	addr := &net.IPAddr{}
 	server := p2p.New(network, addr, identity, handlers, maxPeers, blacklist)
 
 	peersFile := path.Join(ethutil.Config.ExecPath, "known_peers.json")
 
 	nonce, _ := ethutil.RandomUint64()
 
-	eventMux := event.NewTypeMux()
-	ethereum := &Ethereum{
+	eth := &Ethereum{
 		shutdownChan: make(chan bool),
 		quit:         make(chan bool),
 		db:           db,
-		eventMux:     eventMux,
 		Nonce:        nonce,
 		// serverCaps:     caps,
 		server:         server,
 		peersFile:      peersFile,
 		keyManager:     keyManager,
-		clientIdentity: clientIdentity,
+		clientIdentity: identity,
 		blacklist:      blacklist,
 		filters:        make(map[int]*ethchain.Filter),
 	}
 
-	ethereum.blockChain = ethchain.NewBlockChain(ethereum)
-	ethereum.blockPool = NewBlockPool(eventMux, ethereum.blockChain)
-	ethereum.stateManager = ethchain.NewStateManager(eventMux, ethereum.blockChain)
-	ethereum.txPool = ethchain.NewTxPool(eventMux, ethereum.blockChain, ethereum.stateManager, ethereum.server)
+	eth.blockChain = ethchain.NewBlockChain(db)
+	eth.stateManager = ethchain.NewStateManager(eth)
+	eth.blockPool = NewBlockPool(eth)
+	eth.txPool = ethchain.NewTxPool(eth)
 
 	// tart the tx pool
-	ethereum.txPool.Start()
+	eth.txPool.Start()
 
-	return ethereum, nil
+	return eth, nil
+}
+
+// now tx broadcasting is taken out of txPool
+// handled here via subscription, efficiency?
+func (self *Ethereum) broadcastLoop() {
+	// automatically stops if unsubscribe
+	for obj := range self.txSub.Chan() {
+		event := obj.(ethchain.TxEvent)
+		if event.Type == ethchain.TxPre {
+			msg, _ := p2p.NewMsg(TxMsg, event.Tx.RlpData())
+			self.Broadcast(msg)
+		}
+	}
+}
+
+// Broadcast the transaction to the rest of the peers
+
+func (self *Ethereum) Broadcast(msg *p2p.Msg) {
+	self.server.Broadcast("eth", msg)
 }
 
 func (s *Ethereum) EventMux() *event.TypeMux {
@@ -132,7 +141,7 @@ func (s *Ethereum) KeyManager() *ethcrypto.KeyManager {
 	return s.keyManager
 }
 
-func (s *Ethereum) ClientIdentity() ethwire.ClientIdentity {
+func (s *Ethereum) ClientIdentity() p2p.ClientIdentity {
 	return s.clientIdentity
 }
 
@@ -164,25 +173,42 @@ func (s *Ethereum) IsMining() bool {
 	return s.Mining
 }
 
+func (s *Ethereum) IsListening() bool {
+	return s.listening
+}
+
+func (s *Ethereum) PeerCount() int {
+	return s.server.PeerCount()
+}
+
+func (s *Ethereum) Peers() []*p2p.Peer {
+	return s.server.Peers()
+}
+
 // Start the ethereum
 func (s *Ethereum) Start(seed bool) {
 	s.blockPool.Start()
 	s.stateManager.Start()
 
 	go s.filterLoop()
+	s.txSub = s.eventMux.Subscribe(ethchain.TxEvent{})
+	go s.broadcastLoop()
 
+	bootstrap := true
 	if seed {
-		go Seed(s.peersFile, bootstrap, func(addr net.Addr) { s.Server().PeerConnect(addr) })
+		go Seed(s.peersFile, bootstrap, func(addr net.Addr) { s.server.PeerConnect(addr) })
 	}
-	ethlogger.Infoln("Server started")
+	logger.Infoln("Server started")
 }
 
 func (s *Ethereum) Stop() {
 	// Close the database
 	defer s.db.Close()
 
-	WritePeers(s.peersFile, s.Server().PeerAddresses())
+	// WritePeers(s.peersFile, s.server.PeerAddresses())
 	close(s.quit)
+
+	s.txSub.Unsubscribe()
 
 	if s.RpcServer != nil {
 		s.RpcServer.Stop()
@@ -192,7 +218,7 @@ func (s *Ethereum) Stop() {
 	s.eventMux.Stop()
 	s.blockPool.Stop()
 
-	ethlogger.Infoln("Server stopped")
+	logger.Infoln("Server stopped")
 	close(s.shutdownChan)
 }
 
@@ -228,40 +254,31 @@ func (self *Ethereum) GetFilter(id int) *ethchain.Filter {
 }
 
 func (self *Ethereum) filterLoop() {
-	blockChan := make(chan ethreact.Event, 5)
-	messageChan := make(chan ethreact.Event, 5)
 	// Subscribe to events
-	reactor := self.Reactor()
-	reactor.Subscribe("newBlock", blockChan)
-	reactor.Subscribe("messages", messageChan)
-out:
-	for {
-		select {
-		case <-self.quit:
-			break out
-		case block := <-blockChan:
-			if block, ok := block.Resource.(*ethchain.Block); ok {
-				self.filterMu.RLock()
-				for _, filter := range self.filters {
-					if filter.BlockCallback != nil {
-						filter.BlockCallback(block)
+	events := self.eventMux.Subscribe(ethchain.NewBlockEvent{}, ethstate.Messages(nil))
+	for event := range events.Chan() {
+		switch event.(type) {
+		case ethchain.NewBlockEvent:
+			self.filterMu.RLock()
+			for _, filter := range self.filters {
+				if filter.BlockCallback != nil {
+					e := event.(ethchain.NewBlockEvent)
+					filter.BlockCallback(e.Block)
+				}
+			}
+			self.filterMu.RUnlock()
+		case ethstate.Messages:
+			self.filterMu.RLock()
+			for _, filter := range self.filters {
+				if filter.MessageCallback != nil {
+					e := event.(ethstate.Messages)
+					msgs := filter.FilterMessages(e)
+					if len(msgs) > 0 {
+						filter.MessageCallback(msgs)
 					}
 				}
-				self.filterMu.RUnlock()
 			}
-		case msg := <-messageChan:
-			if messages, ok := msg.Resource.(ethstate.Messages); ok {
-				self.filterMu.RLock()
-				for _, filter := range self.filters {
-					if filter.MessageCallback != nil {
-						msgs := filter.FilterMessages(messages)
-						if len(msgs) > 0 {
-							filter.MessageCallback(msgs)
-						}
-					}
-				}
-				self.filterMu.RUnlock()
-			}
+			self.filterMu.RUnlock()
 		}
 	}
 }

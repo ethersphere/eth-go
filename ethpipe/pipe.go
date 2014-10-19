@@ -19,19 +19,15 @@ type VmVars struct {
 }
 
 type Pipe struct {
-	obj          ethchain.EthManager
-	stateManager *ethchain.StateManager
-	blockChain   *ethchain.BlockChain
-	world        *World
+	obj   ethchain.EthManager
+	world *World
 
 	Vm VmVars
 }
 
-func New(obj ethchain.EthManager) *Pipe {
+func New(eth ethchain.EthManager) *Pipe {
 	pipe := &Pipe{
-		obj:          obj,
-		stateManager: obj.StateManager(),
-		blockChain:   obj.BlockChain(),
+		obj: eth,
 	}
 	pipe.world = NewWorld(pipe)
 
@@ -53,7 +49,7 @@ func (self *Pipe) Execute(addr []byte, data []byte, value, gas, price *ethutil.V
 func (self *Pipe) ExecuteObject(object *Object, data []byte, value, gas, price *ethutil.Value) ([]byte, error) {
 	var (
 		initiator = ethstate.NewStateObject(self.obj.KeyManager().KeyPair().Address())
-		block     = self.blockChain.CurrentBlock
+		block     = self.obj.BlockChain().CurrentBlock
 	)
 
 	self.Vm.State = self.World().State().Copy()
@@ -69,7 +65,7 @@ func (self *Pipe) ExecuteObject(object *Object, data []byte, value, gas, price *
 }
 
 func (self *Pipe) Block(hash []byte) *ethchain.Block {
-	return self.blockChain.GetBlock(hash)
+	return self.obj.BlockChain().GetBlock(hash)
 }
 
 func (self *Pipe) Storage(addr, storageAddr []byte) *ethutil.Value {
@@ -133,10 +129,10 @@ func (self *Pipe) Transact(key *ethcrypto.KeyPair, rec []byte, value, gas, price
 		tx = ethchain.NewTransactionMessage(hash, value.BigInt(), gas.BigInt(), price.BigInt(), data)
 	}
 
-	acc := self.stateManager.TransState().GetOrNewStateObject(key.Address())
+	acc := self.obj.StateManager().TransState().GetOrNewStateObject(key.Address())
 	tx.Nonce = acc.Nonce
 	acc.Nonce += 1
-	self.stateManager.TransState().UpdateStateObject(acc)
+	self.obj.StateManager().TransState().UpdateStateObject(acc)
 
 	tx.Sign(key.PrivateKey)
 	self.obj.TxPool().QueueTransaction(tx)

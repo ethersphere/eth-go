@@ -3,11 +3,13 @@ package eth
 import (
 	"bytes"
 	"fmt"
-	"net"
-	"sort"
+	"math"
+	"math/big"
 	"sync"
 	"time"
 
+	"github.com/ethereum/eth-go/ethchain"
+	"github.com/ethereum/eth-go/ethutil"
 	"github.com/ethereum/eth-go/p2p"
 )
 
@@ -47,9 +49,9 @@ type EthProtocol struct {
 	stateLock sync.RWMutex
 
 	hashSyncLock  sync.Mutex
-	hashSyncGroup sync.WaitGroup
+	hashSyncGroup *sync.WaitGroup
 	syncLock      sync.Mutex
-	syncGroup     sync.WaitGroup
+	syncGroup     *sync.WaitGroup
 
 	ethereum *Ethereum
 
@@ -81,18 +83,19 @@ func (self *EthProtocol) Stop() {
 func (self *EthProtocol) statusMsg() *p2p.Msg {
 	msg, _ := p2p.NewMsg(StatusMsg,
 		uint32(ProtocolVersion),
-		uint32(NetVersion),
+		uint32(NetworkId),
 		self.ethereum.BlockChain().TD,
 		self.ethereum.BlockChain().CurrentBlock.Hash(),
 		self.ethereum.BlockChain().Genesis().Hash(),
 	)
+	return msg
 }
 
 func (self *EthProtocol) Name() string {
 	return "eth"
 }
 
-func (self *EthProtocol) Offset() MsgCode {
+func (self *EthProtocol) Offset() p2p.MsgCode {
 	return offset
 }
 
@@ -106,19 +109,19 @@ func (self *EthProtocol) CheckState(state ProtocolState) bool {
 	}
 }
 
-func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
+func (self *EthProtocol) HandleIn(msg *p2p.Msg, response chan *p2p.Msg) {
 	defer close(response)
-	if msg.Code() == HandshakeMsg {
+	if msg.Code() == StatusMsg {
 		self.handleStatus(msg, response)
 	} else {
 		if !self.CheckState(statusReceived) {
-			self.peerError(ProtocolBreach, "message code %v not allowed", msg.Code())
+			self.peerError(p2p.ProtocolBreach, "message code %v not allowed", msg.Code())
 			return
 		}
 		data := msg.Data()
 		switch msg.Code() {
 		//
-		case GetTxsMsg:
+		case GetTxMsg:
 			// Get the current transactions of the pool
 			txs := self.ethereum.TxPool().CurrentTransactions()
 			// Get the RlpData values from the txs
@@ -154,23 +157,24 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 
 			blockPool := self.ethereum.blockPool
 			foundCommonHash := false
+			var lastReceivedHash []byte
 
 			it := data.NewIterator()
 			for it.Next() {
 				hash := it.Value().Bytes()
-				self.lastReceivedHash = hash
+				lastReceivedHash = hash
 				if blockPool.HasCommonHash(hash) {
 					foundCommonHash = true
 					break
 				}
-				blockPool.AddHash(hash, self)
+				blockPool.AddHash(hash, self.peer)
 			}
 
 			if !foundCommonHash {
 				// fetching more hashes but o need to check TD with blockpool
 				self.FetchHashes(response, lastReceivedHash)
 			} else {
-				logger.Infof("Found common hash (%x...)\n", self.lastReceivedHash[0:4])
+				logger.Infof("Found common hash (%x...)\n", lastReceivedHash[0:4])
 				self.HashSync(false)
 			}
 
@@ -195,7 +199,7 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 			it := data.NewIterator()
 			for it.Next() {
 				block := ethchain.NewBlockFromRlpValue(it.Value())
-				blockPool.AddBlock(block, self.peer)
+				self.ethereum.blockPool.AddBlock(block, self.peer)
 			}
 			self.lastBlockReceived = time.Now()
 		case NewBlockMsg:
@@ -218,12 +222,12 @@ func (self *EthProtocol) HandleIn(msg *Msg, response chan *Msg) {
 }
 
 func (self *EthProtocol) Sync(sync bool) {
-	self.synclock.Lock()
-	defer self.synclock.Lock()
+	self.syncLock.Lock()
+	defer self.syncLock.Lock()
 	if self.syncGroup == nil {
 
 		if sync {
-			self.syncGroup = self.ethereum.BlockPool().Sync()
+			self.syncGroup = self.ethereum.BlockPool().ChainSync()
 		}
 	} else {
 		if !sync {
@@ -255,7 +259,7 @@ func (self *EthProtocol) HandleOut(msg *p2p.Msg) (allowed bool) {
 }
 
 func (self *EthProtocol) peerError(errorCode p2p.ErrorCode, format string, v ...interface{}) {
-	err := NewPeerError(errorCode, format, v...)
+	err := p2p.NewPeerError(errorCode, format, v...)
 	logger.Warnln(err)
 	fmt.Println(self.peer, err)
 	if self.peer != nil {
@@ -267,10 +271,10 @@ func (self *EthProtocol) handleStatus(msg *p2p.Msg, response chan *p2p.Msg) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	if self.state != nullState {
-		self.peerError(ProtocolBreach, "extra status")
+		self.peerError(p2p.ProtocolBreach, "extra status")
 		return
 	}
-	c := msg.Data
+	c := msg.Data()
 
 	var (
 		protocolVersion = c.Get(0).Uint()
@@ -300,13 +304,13 @@ func (self *EthProtocol) handleStatus(msg *p2p.Msg, response chan *p2p.Msg) {
 
 	self.state = statusReceived
 
-	if self.ethereum.BlockPool().AddPeer(self.td, self.peer) {
-		// peer.HashSync(false)?
-	}
+	// ???
+	self.ethereum.BlockPool().AddPeer(self.td, self.peer)
+	// peer.HashSync(false)?
 	// this should only be called if this is higher difficulty no?
 	self.FetchHashes(response, bestHash)
 
-	ethlogger.Infof("Peer is [eth] capable (%d/%d). TD = %v ~ %x", protocolVersion, networkId, self.td, self.bestHash)
+	logger.Infof("Peer is [eth] capable (%d/%d). TD = %v ~ %x", protocolVersion, networkId, self.td, self.bestHash)
 
 }
 
@@ -315,8 +319,8 @@ func (self *EthProtocol) FetchHashes(response chan *p2p.Msg, lastReceivedHash []
 	if !self.ethereum.BlockPool().HasLatestHash() {
 		self.HashSync(true)
 		const amount = 256
-		ethlogger.Debugf("Fetching hashes (%d) %x...\n", amount, lastReceivedHash[0:4])
-		msg, _ := p2p.NewMsg(p2p.GetBlockHashesMsg, lastReceivedHash, uint32(amount))
+		logger.Debugf("Fetching hashes (%d) %x...\n", amount, lastReceivedHash[0:4])
+		msg, _ := p2p.NewMsg(GetBlockHashesMsg, lastReceivedHash, uint32(amount))
 		response <- msg
 	}
 }

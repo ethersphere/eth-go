@@ -9,7 +9,6 @@ import (
 
 	"github.com/ethereum/eth-go/ethlog"
 	"github.com/ethereum/eth-go/ethstate"
-	"github.com/ethereum/eth-go/p2p"
 )
 
 var txplogger = ethlog.NewLogger("TXP")
@@ -19,7 +18,6 @@ const (
 )
 
 type TxPoolHook chan *Transaction
-type TxMsgTy byte
 
 const (
 	TxPre = iota
@@ -29,11 +27,6 @@ const (
 )
 
 var MinGasPrice = big.NewInt(10000000000000)
-
-type TxMsg struct {
-	Tx   *Transaction
-	Type TxMsgTy
-}
 
 func FindTx(pool *list.List, finder func(*Transaction, *list.Element) bool) *Transaction {
 	for e := pool.Front(); e != nil; e = e.Next() {
@@ -57,11 +50,7 @@ type TxProcessor interface {
 // pool is being drained or synced for whatever reason the transactions
 // will simple queue up and handled when the mutex is freed.
 type TxPool struct {
-	bc          *BlockChain
-	sm          *StateManager
-	eventMux    *event.TypeMux
-	broadcaster Broadcaster
-
+	eth EthManager
 	// The mutex for accessing the Tx pool.
 	mutex sync.Mutex
 	// Queueing channel for reading and writing incoming
@@ -73,19 +62,14 @@ type TxPool struct {
 	pool *list.List
 
 	SecondaryProcessor TxProcessor
-
-	subscribers []chan TxMsg
 }
 
-func NewTxPool(eventMux *event.TypeMux, blockChain *BlockChain, sm *StateManager, broadcaster Broadcaster) *TxPool {
+func NewTxPool(eth EthManager) *TxPool {
 	return &TxPool{
-		pool:        list.New(),
-		queueChan:   make(chan *Transaction, txPoolQueueSize),
-		quit:        make(chan bool),
-		eventMux:    eventMux,
-		bc:          blockChain,
-		sm:          sm,
-		broadcaster: broadcaster,
+		pool:      list.New(),
+		queueChan: make(chan *Transaction, txPoolQueueSize),
+		quit:      make(chan bool),
+		eth:       eth,
 	}
 }
 
@@ -95,16 +79,12 @@ func (pool *TxPool) addTransaction(tx *Transaction) {
 	defer pool.mutex.Unlock()
 
 	pool.pool.PushBack(tx)
-
-	// Broadcast the transaction to the rest of the peers
-	msg, _ := p2p.NewMsg(TxMsg, tx.RlpData())
-	pool.server.Broadcast("eth", msg)
 }
 
 func (pool *TxPool) ValidateTransaction(tx *Transaction) error {
 	// Get the last block so we can retrieve the sender and receiver from
 	// the merkle trie
-	block := pool.bc.CurrentBlock
+	block := pool.eth.BlockChain().CurrentBlock
 	// Something has gone horribly wrong if this happens
 	if block == nil {
 		return fmt.Errorf("[TXPL] No last block on the block chain")
@@ -119,7 +99,7 @@ func (pool *TxPool) ValidateTransaction(tx *Transaction) error {
 	}
 
 	// Get the sender
-	sender := pool.sm.CurrentState().GetAccount(tx.Sender())
+	sender := pool.eth.StateManager().CurrentState().GetAccount(tx.Sender())
 
 	totAmount := new(big.Int).Set(tx.Value)
 	// Make sure there's enough in the sender's account. Having insufficient
@@ -168,7 +148,7 @@ out:
 				txplogger.Debugf("(t) %x => %x (%v) %x\n", tx.Sender()[:4], tmp, tx.Value, tx.Hash())
 
 				// Notify the subscribers
-				pool.eventMux.Post(TxEvent{TxPre, tx})
+				pool.eth.EventMux().Post(TxEvent{TxPre, tx})
 			}
 		case <-pool.quit:
 			break out

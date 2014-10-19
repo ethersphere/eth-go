@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/ethereum/eth-go/ethstate"
+	"github.com/ethereum/eth-go/ethutil"
 )
 
 type AccountChange struct {
