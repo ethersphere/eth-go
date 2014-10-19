@@ -70,7 +70,7 @@ func NewStateManager(eventMux *event.TypeMux, blockChain *BlockChain, txPool *Tx
 		eventMux: eventMux,
 		bc:       blockChain,
 		txPool:   txPool,
-		db:       ethutil.Database,
+		db:       db,
 	}
 	sm.transState = ethereum.BlockChain().CurrentBlock.State().Copy()
 	sm.miningState = ethereum.BlockChain().CurrentBlock.State().Copy()
