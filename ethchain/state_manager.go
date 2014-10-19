@@ -13,23 +13,11 @@ import (
 	"github.com/ethereum/eth-go/ethlog"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
-	"github.com/ethereum/eth-go/ethwire"
 	"github.com/ethereum/eth-go/event"
+	"github.com/ethereum/eth-go/p2p"
 )
 
 var statelogger = ethlog.NewLogger("STATE")
-
-type Peer interface {
-	Inbound() bool
-	LastSend() time.Time
-	LastPong() int64
-	Host() []byte
-	Port() uint16
-	Version() string
-	PingTime() string
-	Connected() *int32
-	Caps() *ethutil.Value
-}
 
 type EthManager interface {
 	StateManager() *StateManager
@@ -50,13 +38,14 @@ type StateManager struct {
 	// Mutex for locking the block processor. Blocks can only be handled one at a time
 	mutex sync.Mutex
 	// Canonical block chain
-	bc *BlockChain
+	bc       *BlockChain
+	db       ethutil.Database
+	txPool   *TxPool
+	eventMux *event.TypeMux
 	// non-persistent key/value memory storage
 	mem map[string]*big.Int
 	// Proof of work used for validating
 	Pow PoW
-	// The ethereum manager interface
-	eth EthManager
 	// The managed states
 	// Transiently state. The trans state isn't ever saved, validated and
 	// it could be used for setting account nonces without effecting
@@ -74,12 +63,14 @@ type StateManager struct {
 	events event.Subscription
 }
 
-func NewStateManager(ethereum EthManager) *StateManager {
+func NewStateManager(eventMux *event.TypeMux, blockChain *BlockChain, txPool *TxPool, db ethutil.Database) *StateManager {
 	sm := &StateManager{
-		mem: make(map[string]*big.Int),
-		Pow: &EasyPow{},
-		eth: ethereum,
-		bc:  ethereum.BlockChain(),
+		mem:      make(map[string]*big.Int),
+		Pow:      &EasyPow{},
+		eventMux: eventMux,
+		bc:       blockChain,
+		txPool:   txPool,
+		db:       ethutil.Database,
 	}
 	sm.transState = ethereum.BlockChain().CurrentBlock.State().Copy()
 	sm.miningState = ethereum.BlockChain().CurrentBlock.State().Copy()
@@ -89,7 +80,7 @@ func NewStateManager(ethereum EthManager) *StateManager {
 
 func (self *StateManager) Start() {
 	statelogger.Debugln("Starting state manager")
-	self.events = self.eth.EventMux().Subscribe(Blocks(nil))
+	self.events = self.eventMux.Subscribe(Blocks(nil))
 	go self.updateThread()
 }
 
@@ -113,7 +104,7 @@ func (self *StateManager) updateThread() {
 }
 
 func (sm *StateManager) CurrentState() *ethstate.State {
-	return sm.eth.BlockChain().CurrentBlock.State()
+	return sm.bc.CurrentBlock.State()
 }
 
 func (sm *StateManager) TransState() *ethstate.State {
@@ -125,7 +116,7 @@ func (sm *StateManager) MiningState() *ethstate.State {
 }
 
 func (sm *StateManager) NewMiningState() *ethstate.State {
-	sm.miningState = sm.eth.BlockChain().CurrentBlock.State().Copy()
+	sm.miningState = sm.bc.CurrentBlock.State().Copy()
 
 	return sm.miningState
 }
@@ -187,7 +178,7 @@ done:
 		}
 
 		// Notify all subscribers
-		self.eth.EventMux().Post(TxEvent{TxPost, tx})
+		self.eventMux.Post(TxEvent{TxPost, tx})
 
 		receipts = append(receipts, receipt)
 		handled = append(handled, tx)
@@ -274,16 +265,16 @@ func (sm *StateManager) Process(block *Block, dontReact bool) (err error) {
 		filter := sm.createBloomFilter(state)
 		// Persist the data
 		fk := append([]byte("bloom"), block.Hash()...)
-		sm.eth.Db().Put(fk, filter.Bin())
+		sm.db.Put(fk, filter.Bin())
 
 		statelogger.Infof("Imported block #%d (%x...)\n", block.Number, block.Hash()[0:4])
 		if dontReact == false {
-			sm.eth.EventMux().Post(NewBlockEvent{block})
+			sm.eventMux.Post(NewBlockEvent{block})
 
 			state.Manifest().Reset()
 		}
 
-		sm.eth.TxPool().RemoveInvalid(state)
+		sm.txPool().RemoveInvalid(state)
 	} else {
 		statelogger.Errorln("total diff failed")
 	}
@@ -419,7 +410,7 @@ func (sm *StateManager) createBloomFilter(state *ethstate.State) *BloomFilter {
 		bloomf.Set(msg.From)
 	}
 
-	sm.eth.EventMux().Post(state.Manifest().Messages)
+	sm.eventMux.Post(state.Manifest().Messages)
 
 	return bloomf
 }

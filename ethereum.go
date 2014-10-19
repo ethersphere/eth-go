@@ -116,7 +116,7 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	ethereum.txPool = ethchain.NewTxPool(ethereum)
 	ethereum.blockChain = ethchain.NewBlockChain(ethereum)
 	ethereum.blockPool = NewBlockPool(eventMux, ethereum.blockChain)
-	ethereum.stateManager = ethchain.NewStateManager(ethereum)
+	ethereum.stateManager = ethchain.NewStateManager(eventMux, ethereum.blockChain)
 
 	// tart the tx pool
 	ethereum.txPool.Start()
