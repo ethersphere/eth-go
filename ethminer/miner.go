@@ -6,11 +6,14 @@ import (
 
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethlog"
-	"github.com/ethereum/eth-go/ethwire"
 	"github.com/ethereum/eth-go/event"
 )
 
 var logger = ethlog.NewLogger("MINER")
+
+type NewMinedBlockEvent struct {
+	Block *ethchain.Block
+}
 
 type Miner struct {
 	pow      ethchain.PoW
@@ -203,7 +206,7 @@ func (self *Miner) mineNewBlock() {
 		if err != nil {
 			logger.Infoln(err)
 		} else {
-			self.ethereum.Broadcast(ethwire.MsgBlockTy, []interface{}{self.block.Value().Val})
+			self.ethereum.EventMux().Post(NewMinedBlockEvent{self.block})
 			logger.Infof("🔨  Mined block %x\n", self.block.Hash())
 			logger.Infoln(self.block)
 			// Gather the new batch of transactions currently in the tx pool

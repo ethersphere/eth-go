@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/eth-go/ethchain"
 	"github.com/ethereum/eth-go/ethcrypto"
 	"github.com/ethereum/eth-go/ethlog"
+	"github.com/ethereum/eth-go/ethminer"
 	"github.com/ethereum/eth-go/ethrpc"
 	"github.com/ethereum/eth-go/ethstate"
 	"github.com/ethereum/eth-go/ethutil"
@@ -45,6 +46,7 @@ type Ethereum struct {
 	blacklist p2p.Blacklist
 	server    *p2p.Server
 	txSub     event.Subscription
+	blockSub  event.Subscription
 
 	// Capabilities for outgoing peers
 	// serverCaps Caps
@@ -114,19 +116,6 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	return eth, nil
 }
 
-// now tx broadcasting is taken out of txPool
-// handled here via subscription, efficiency?
-func (self *Ethereum) broadcastLoop() {
-	// automatically stops if unsubscribe
-	for obj := range self.txSub.Chan() {
-		event := obj.(ethchain.TxEvent)
-		if event.Type == ethchain.TxPre {
-			msg, _ := p2p.NewMsg(TxMsg, event.Tx.RlpData())
-			self.Broadcast(msg)
-		}
-	}
-}
-
 // Broadcast the transaction to the rest of the peers
 
 func (self *Ethereum) Broadcast(msg *p2p.Msg) {
@@ -191,9 +180,16 @@ func (s *Ethereum) Start(seed bool) {
 	s.stateManager.Start()
 
 	go s.filterLoop()
-	s.txSub = s.eventMux.Subscribe(ethchain.TxEvent{})
-	go s.broadcastLoop()
 
+	// broadcast transactions
+	s.txSub = s.eventMux.Subscribe(ethchain.TxEvent{})
+	go s.txBroadcastLoop()
+
+	// broadcast mined blocks
+	s.blockSub = s.eventMux.Subscribe(ethminer.NewMinedBlockEvent{})
+	go s.blockBroadcastLoop()
+
+	//FIXME:
 	bootstrap := true
 	if seed {
 		go Seed(s.peersFile, bootstrap, func(addr net.Addr) { s.server.PeerConnect(addr) })
@@ -208,7 +204,8 @@ func (s *Ethereum) Stop() {
 	// WritePeers(s.peersFile, s.server.PeerAddresses())
 	close(s.quit)
 
-	s.txSub.Unsubscribe()
+	s.txSub.Unsubscribe()    // quits txBroadcastLoop
+	s.blockSub.Unsubscribe() // quits blockBroadcastLoop
 
 	if s.RpcServer != nil {
 		s.RpcServer.Stop()
@@ -225,6 +222,28 @@ func (s *Ethereum) Stop() {
 // This function will wait for a shutdown and resumes main thread execution
 func (s *Ethereum) WaitForShutdown() {
 	<-s.shutdownChan
+}
+
+// now tx broadcasting is taken out of txPool
+// handled here via subscription, efficiency?
+func (self *Ethereum) txBroadcastLoop() {
+	// automatically stops if unsubscribe
+	for obj := range self.txSub.Chan() {
+		event := obj.(ethchain.TxEvent)
+		if event.Type == ethchain.TxPre {
+			msg, _ := p2p.NewMsg(TxMsg, event.Tx.RlpData())
+			self.Broadcast(msg)
+		}
+	}
+}
+
+func (self *Ethereum) blockBroadcastLoop() {
+	// automatically stops if unsubscribe
+	for obj := range self.txSub.Chan() {
+		event := obj.(ethminer.NewMinedBlockEvent)
+		msg, _ := p2p.NewMsg(NewBlockMsg, event.Block.Value().Val)
+		self.Broadcast(msg)
+	}
 }
 
 // InstallFilter adds filter for blockchain events.
