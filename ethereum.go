@@ -70,7 +70,7 @@ type Ethereum struct {
 	filters  map[int]*ethchain.Filter
 }
 
-func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto.KeyManager, maxPeers int, caps Caps, usePnp bool) (*Ethereum, error) {
+func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto.KeyManager, caps Caps, usePnp bool, port string, maxPeers int) (*Ethereum, error) {
 
 	saveProtocolVersion(db)
 	ethutil.Config.Db = db
@@ -80,11 +80,14 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	// Sorry Py person. I must blacklist. you perform badly
 	blacklist.Put(ethutil.Hex2Bytes("64656330303561383532336435376331616537643864663236623336313863373537353163636634333530626263396330346237336262623931383064393031"))
 
+	// setup network and p2p layer
 	var natType p2p.NATType
-
 	network := p2p.NewTCPNetwork(natType)
+	addr, err := network.ParseAddr(net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		return nil, err
+	}
 	handlers := make(p2p.Handlers)
-	addr := &net.IPAddr{}
 	server := p2p.New(network, addr, identity, handlers, maxPeers, blacklist)
 
 	peersFile := path.Join(ethutil.Config.ExecPath, "known_peers.json")
