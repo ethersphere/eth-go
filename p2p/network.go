@@ -59,7 +59,7 @@ func NewTCPNetwork(natType NATType) (net *TCPNetwork) {
 	}
 }
 
-func (self *TCPNetwork) Dialer(addr net.Addr) (*net.Dialer, error) {
+func (self *TCPNetwork) Dialer(addr net.Addr) (Dialer, error) {
 	return &net.Dialer{
 		Timeout: DialerTimeout * time.Second,
 		// KeepAlive: KeepAlivePeriod * time.Minute,
