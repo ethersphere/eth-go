@@ -80,17 +80,6 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 	// Sorry Py person. I must blacklist. you perform badly
 	blacklist.Put(ethutil.Hex2Bytes("64656330303561383532336435376331616537643864663236623336313863373537353163636634333530626263396330346237336262623931383064393031"))
 
-	// setup network and p2p layer
-	var natType p2p.NATType
-	network := p2p.NewTCPNetwork(natType)
-	addr, err := network.ParseAddr(net.JoinHostPort("0.0.0.0", port))
-	if err != nil {
-		return nil, err
-	}
-	handlers := make(p2p.Handlers)
-	handlers["eth"] = NewEthProtocol
-	server := p2p.New(network, addr, identity, handlers, maxPeers, blacklist)
-
 	peersFile := path.Join(ethutil.Config.ExecPath, "known_peers.json")
 
 	nonce, _ := ethutil.RandomUint64()
@@ -101,13 +90,22 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 		db:           db,
 		Nonce:        nonce,
 		// serverCaps:     caps,
-		server:         server,
 		peersFile:      peersFile,
 		keyManager:     keyManager,
 		clientIdentity: identity,
 		blacklist:      blacklist,
 		filters:        make(map[int]*ethchain.Filter),
 	}
+	// setup network and p2p layer
+	var natType p2p.NATType
+	network := p2p.NewTCPNetwork(natType)
+	addr, err := network.ParseAddr(net.JoinHostPort("0.0.0.0", port))
+	if err != nil {
+		return nil, err
+	}
+	handlers := make(p2p.Handlers)
+	handlers["eth"] = NewEthHandler(eth)
+	eth.server = p2p.New(network, addr, identity, handlers, maxPeers, blacklist)
 
 	eth.blockChain = ethchain.NewBlockChain(db)
 	eth.stateManager = ethchain.NewStateManager(eth)
