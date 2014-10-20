@@ -39,6 +39,14 @@ func (self *TestNetwork) Start() error {
 	return nil
 }
 
+func (self *TestNetwork) NewAddr(string, int) (addr net.Addr, err error) {
+	return
+}
+
+func (self *TestNetwork) ParseAddr(string) (addr net.Addr, err error) {
+	return
+}
+
 type TestAddr struct {
 	name string
 }

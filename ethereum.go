@@ -125,6 +125,13 @@ func (self *Ethereum) Broadcast(msg *p2p.Msg) {
 	self.server.Broadcast("eth", msg)
 }
 
+func (self *Ethereum) ConnectToPeer(addr string) {
+	address, err := self.server.ParseAddr(addr)
+	if err == nil {
+		self.server.PeerConnect(address)
+	}
+}
+
 func (s *Ethereum) EventMux() *event.TypeMux {
 	return s.eventMux
 }

@@ -25,6 +25,8 @@ type Network interface {
 	Start() error
 	Listener(net.Addr) (net.Listener, error)
 	Dialer(net.Addr) (Dialer, error)
+	NewAddr(string, int) (addr net.Addr, err error)
+	ParseAddr(string) (addr net.Addr, err error)
 }
 
 type NAT interface {

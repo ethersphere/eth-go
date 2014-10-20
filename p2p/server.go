@@ -133,6 +133,16 @@ func New(network Network, addr net.Addr, identity ClientIdentity, handlers Handl
 	return self
 }
 
+func (self *Server) NewAddr(host string, port int) (addr net.Addr, err error) {
+	addr, err = self.network.NewAddr(host, port)
+	return
+}
+
+func (self *Server) ParseAddr(address string) (addr net.Addr, err error) {
+	addr, err = self.network.ParseAddr(address)
+	return
+}
+
 func (self *Server) ClientIdentity() ClientIdentity {
 	return self.identity
 }

@@ -29,6 +29,7 @@ type EthManager interface {
 	IsListening() bool
 	ClientIdentity() p2p.ClientIdentity
 	Db() ethutil.Database
+	ConnectToPeer(addr string)
 	EventMux() *event.TypeMux
 }
 
