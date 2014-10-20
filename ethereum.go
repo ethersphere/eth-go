@@ -88,6 +88,7 @@ func New(db ethutil.Database, identity p2p.ClientIdentity, keyManager *ethcrypto
 		return nil, err
 	}
 	handlers := make(p2p.Handlers)
+	handlers["eth"] = NewEthProtocol
 	server := p2p.New(network, addr, identity, handlers, maxPeers, blacklist)
 
 	peersFile := path.Join(ethutil.Config.ExecPath, "known_peers.json")

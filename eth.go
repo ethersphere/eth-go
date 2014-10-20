@@ -65,7 +65,7 @@ type EthProtocol struct {
 	lastRequestedBlock *ethchain.Block
 }
 
-func NewEthProtocol(peer *p2p.Peer) *EthProtocol {
+func NewEthProtocol(peer *p2p.Peer) p2p.Protocol {
 	return &EthProtocol{
 		peer: peer,
 	}
