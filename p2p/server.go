@@ -85,6 +85,7 @@ type Server struct {
 	peerSlots  chan int
 	peersTable map[string]int
 	peersMsg   *Msg
+	peerCount  int
 
 	peerConnect    chan net.Addr
 	peerDisconnect chan DisconnectRequest
@@ -155,6 +156,23 @@ func (self *Server) PeersMessage() (msg *Msg, err error) {
 		}
 	}
 	return
+}
+
+func (self *Server) Peers() (peers []*Peer) {
+	self.peersLock.RLock()
+	defer self.peersLock.RUnlock()
+	for _, peer := range self.peers {
+		if peer != nil {
+			peers = append(peers, peer)
+		}
+	}
+	return
+}
+
+func (self *Server) PeerCount() int {
+	self.peersLock.RLock()
+	defer self.peersLock.RUnlock()
+	return self.peerCount
 }
 
 var getPeersMsg, _ = NewMsg(GetPeersMsg)
@@ -388,6 +406,7 @@ func (self *Server) addPeer(conn net.Conn, address net.Addr, inbound bool, slot 
 		peer := NewPeer(conn, address, inbound, self)
 		self.peers[slot] = peer
 		self.peersTable[address.String()] = slot
+		self.peerCount++
 		// reset peersmsg
 		self.peersMsg = nil
 		fmt.Printf("added peer %v %v (slot %v)\n", address, peer, slot)
@@ -398,15 +417,25 @@ func (self *Server) addPeer(conn net.Conn, address net.Addr, inbound bool, slot 
 // removes peer: sending disconnect msg, stop peer, remove rom list/table, release slot
 func (self *Server) removePeer(request DisconnectRequest) {
 	self.peersLock.Lock()
-	defer self.peersLock.Unlock()
+
 	address := request.addr
 	slot := self.peersTable[address.String()]
 	peer := self.peers[slot]
 	fmt.Printf("removing peer %v %v (slot %v)\n", address, peer, slot)
 	if peer == nil {
 		logger.Debugf("already removed peer on %v", address)
+		self.peersLock.Unlock()
 		return
 	}
+	// remove from list and index
+	self.peerCount--
+	self.peers[slot] = nil
+	delete(self.peersTable, address.String())
+	// reset peersmsg
+	self.peersMsg = nil
+	fmt.Printf("removed peer %v (slot %v)\n", peer, slot)
+	self.peersLock.Unlock()
+
 	// sending disconnect message
 	disconnectMsg, _ := NewMsg(DiscMsg, request.reason)
 	peer.Write("", disconnectMsg)
@@ -416,14 +445,8 @@ func (self *Server) removePeer(request DisconnectRequest) {
 	fmt.Println("stopping peer")
 	peer.Stop()
 	fmt.Println("stopped peer")
-	// remove from list and index
-	self.peers[slot] = nil
-	delete(self.peersTable, address.String())
-	// release slot to signal need for a new peer
+	// release slot to signal need for a new peer, last!
 	self.peerSlots <- slot
-	// reset peersmsg
-	self.peersMsg = nil
-	fmt.Printf("removed peer %v (slot %v)\n", peer, slot)
 }
 
 // fix handshake message to push to peers

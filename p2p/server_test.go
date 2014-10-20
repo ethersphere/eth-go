@@ -194,4 +194,7 @@ func TestServerPeersMessage(t *testing.T) {
 	if err != nil {
 		t.Errorf("expect no error, got %v", err)
 	}
+	if c := server.PeerCount(); c != 2 {
+		t.Errorf("expect 2 peers, got %v", c)
+	}
 }
