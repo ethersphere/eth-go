@@ -68,11 +68,11 @@ func (self *PeerErrorHandler) handle(peerError *PeerError) {
 		reason = DiscInvalidIdentity
 	case PubkeyForbidden:
 		reason = DiscUselessPeer
-	case InvalidMsgCode, PacketTooShort, PayloadTooShort, MagicTokenMismatch, ProtocolBreach:
+	case InvalidMsgCode, PacketTooShort, PayloadTooShort, MagicTokenMismatch, EmptyPayload, ProtocolBreach:
 		reason = DiscProtocolError
 	case PingTimeout:
 		reason = DiscReadTimeout
-	case ReadError, WriteError, MiscError:
+	case WriteError, MiscError:
 		reason = DiscNetworkError
 	case InvalidGenesis, InvalidNetworkId, InvalidProtocolVersion:
 		reason = DiscSubprotocolError
@@ -92,5 +92,10 @@ func (self *PeerErrorHandler) handle(peerError *PeerError) {
 }
 
 func (self *PeerErrorHandler) getSeverity(peerError *PeerError) int {
-	return 1
+	switch peerError.Code {
+	case ReadError:
+		return 4 //tolerate 3 :)
+	default:
+		return 1
+	}
 }

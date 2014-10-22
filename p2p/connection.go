@@ -226,7 +226,8 @@ out:
 
 			if length > 0 {
 				start = false // now consuming payload
-			} else { // silently discard packet with zero payload?
+			} else { //penalize peer but read on
+				self.err <- NewPeerError(EmptyPayload, "")
 				length = 8
 			}
 		} else {

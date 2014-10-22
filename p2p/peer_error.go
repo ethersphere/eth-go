@@ -12,6 +12,7 @@ const (
 	PacketTooShort = iota
 	PayloadTooShort
 	MagicTokenMismatch
+	EmptyPayload
 	ReadError
 	WriteError
 	MiscError
@@ -33,6 +34,7 @@ var errorToString = map[ErrorCode]string{
 	PacketTooShort:         "Packet too short",
 	PayloadTooShort:        "Payload too short",
 	MagicTokenMismatch:     "Magic token mismatch",
+	EmptyPayload:           "Empty payload",
 	ReadError:              "Read error",
 	WriteError:             "Write error",
 	MiscError:              "Misc error",

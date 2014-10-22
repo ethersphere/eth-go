@@ -153,9 +153,16 @@ func TestReadingEmptyPayload(t *testing.T) {
 	select {
 	case packet := <-conn.Read():
 		t.Errorf("read %v", packet)
-	case err := <-conn.Error():
-		t.Errorf("incorrect error %v", err)
 	default:
+	}
+	select {
+	case err := <-conn.Error():
+		code := err.Code
+		if code != EmptyPayload {
+			t.Errorf("incorrect error, expected EmptyPayload, got %v", code)
+		}
+	default:
+		t.Errorf("no error, expected EmptyPayload")
 	}
 	conn.Close()
 }
